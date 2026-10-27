@@ -1,0 +1,30 @@
+{
+  "name": "antigravity-agent-panel",
+  "version": "1.0.0",
+  "description": "Native real-time Agent & Subagent Token Telemetry Panel for Google Antigravity 2.0, pinned directly above the chat input box with zero token overhead.",
+  "main": "daemon.js",
+  "bin": {
+    "antigravity-agent-panel": "./install.js"
+  },
+  "scripts": {
+    "start": "node install.js",
+    "daemon": "node daemon.js",
+    "install-panel": "node install.js",
+    "uninstall-panel": "node uninstall.js"
+  },
+  "keywords": [
+    "google-antigravity",
+    "antigravity",
+    "agent-panel",
+    "token-tracker",
+    "subagents",
+    "gemini",
+    "telemetry",
+    "hud"
+  ],
+  "author": "Md. Naeem (@mdnaeem-28)",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
