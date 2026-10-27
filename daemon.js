@@ -24,7 +24,10 @@ function resolveDevToolsPortFiles() {
 
 const PORT_FILES = resolveDevToolsPortFiles();
 const WINDOW_LIMIT = 1_000_000;
-const IDLE_AUTO_HIDE_MS = 20 * 60 * 1000; // Auto-hide after 20 minutes of complete inactivity
+const IDLE_AUTO_HIDE_MS = 20 * 60 * 1000;
+const WEEK_MS = 7 * 24 * 3600 * 1000;
+// Weekly reference budget in USD (configurable via AG_WEEKLY_BUDGET_USD, default $150/week pro tier equivalent)
+const WEEKLY_BUDGET_USD = parseFloat(process.env.AG_WEEKLY_BUDGET_USD || '150');
 
 const PRICES = [
   [/argon|pro|opus/i, 2.5, 10.0],
@@ -105,6 +108,86 @@ function roleOf(type, description) {
   if (/scout|skill|catalog/.test(s)) return 'scout';
   if (/explore|research|search/.test(s)) return 'explore';
   return 'explore';
+}
+
+// ============================================================================
+// Weekly Usage Computation (cached every 15 seconds)
+// Matches claude-agent-panel: "Usage █░░░░░░░░░ 11% / 15% Week, Under Pace"
+// ============================================================================
+let cachedWeek = null;
+let lastWeekCalcMs = 0;
+
+function getWeeklyUsage() {
+  const now = Date.now();
+  if (cachedWeek && (now - lastWeekCalcMs) < 15000) {
+    return cachedWeek;
+  }
+  lastWeekCalcMs = now;
+
+  // Calculate current 7-day window (anchored to Monday 00:00 local time)
+  const dNow = new Date(now);
+  const dayOfWeek = (dNow.getDay() + 6) % 7; // Monday = 0 .. Sunday = 6
+  const mondayStart = new Date(dNow.getFullYear(), dNow.getMonth(), dNow.getDate() - dayOfWeek, 0, 0, 0, 0).getTime();
+  const elapsedMs = Math.max(1, now - mondayStart);
+  const elapsedFraction = Math.min(1, Math.max(0.01, elapsedMs / WEEK_MS));
+  const elapsedPct = Math.max(1, Math.min(100, Math.round(elapsedFraction * 100)));
+
+  let weekCostUsd = 0;
+  const cutoffMs = now - WEEK_MS;
+
+  if (fs.existsSync(BRAIN_DIR)) {
+    try {
+      const dirs = fs.readdirSync(BRAIN_DIR, { withFileTypes: true });
+      for (const d of dirs) {
+        if (!d.isDirectory()) continue;
+        const tPath = path.join(BRAIN_DIR, d.name, '.system_generated', 'logs', 'transcript.jsonl');
+        if (!fs.existsSync(tPath)) continue;
+        const st = fs.statSync(tPath);
+        if (st.mtimeMs < cutoffMs) continue;
+        const lines = fs.readFileSync(tPath, 'utf8').trim().split('\n');
+        let curModel = 'Gemini 4 Argon';
+        for (const line of lines) {
+          if (!line) continue;
+          try {
+            const obj = JSON.parse(line);
+            if (obj.type === 'USER_INPUT' && typeof obj.content === 'string') {
+              const m = obj.content.match(/Model Selection` from [^\n]+? to ([^\n.]+?)\./);
+              if (m && m[1]) curModel = m[1].trim();
+            } else if (obj.type === 'PLANNER_RESPONSE') {
+              const tMs = obj.created_at ? new Date(obj.created_at).getTime() : st.mtimeMs;
+              if (tMs >= mondayStart) {
+                weekCostUsd += getPrice(curModel, obj.input_tokens || 0, obj.output_tokens || 0, obj.cache_read_tokens || 0);
+              }
+            }
+          } catch {}
+        }
+      }
+    } catch {}
+  }
+
+  const usedPct = Math.min(100, Math.max(1, Math.round((weekCostUsd / WEEKLY_BUDGET_USD) * 100)));
+  const pace = usedPct / elapsedPct;
+  let verdict = 'On Pace';
+  let color = '#9AA0A6';
+  if (pace > 1.15) {
+    verdict = 'Over Pace';
+    color = '#C0392B';
+  } else if (pace > 1.0) {
+    verdict = 'Ahead Of Pace';
+    color = '#D99A3B';
+  } else if (pace < 0.85) {
+    verdict = 'Under Pace';
+    color = '#3BA55C';
+  }
+
+  cachedWeek = {
+    used: usedPct,
+    elapsed: elapsedPct,
+    verdict,
+    color,
+    weekCostUsd,
+  };
+  return cachedWeek;
 }
 
 function inspectFirstLine(tPath) {
@@ -268,6 +351,11 @@ function analyzeConversation(forcedId, uiModelLabel) {
   const subagentsList = [];
   let pendingSubagentIdx = 0;
 
+  // Also track completed task turns so even if no subagent was spawned in a chat,
+  // the user can click "Show" on "N done · ≈$X.XX [Show]" to inspect each task run!
+  const turnRuns = [];
+  let currentTurn = null;
+
   for (let i = 0; i < lines.length; i++) {
     let d;
     try {
@@ -282,17 +370,44 @@ function analyzeConversation(forcedId, uiModelLabel) {
         const deltaSec = (stepTime - prevStepMs) / 1000;
         if (deltaSec > 0 && deltaSec <= 120) {
           activeElapsedSec += deltaSec;
+          if (currentTurn) currentTurn.elapsedSec += deltaSec;
         }
       }
       prevStepMs = stepTime;
       lastStepMs = stepTime;
     }
 
-    if (!uiModelLabel && d.type === 'USER_INPUT' && typeof d.content === 'string') {
-      const mMatch = d.content.match(/Model Selection` from [^\n]+? to ([^\n.]+?)\./);
-      if (mMatch && mMatch[1]) {
-        rawModel = mMatch[1].trim();
+    if (d.type === 'USER_INPUT' && typeof d.content === 'string') {
+      if (!uiModelLabel) {
+        const mMatch = d.content.match(/Model Selection` from [^\n]+? to ([^\n.]+?)\./);
+        if (mMatch && mMatch[1]) {
+          rawModel = mMatch[1].trim();
+        }
       }
+      // Extract clean prompt title for turn summary
+      const reqMatch = d.content.match(/<USER_REQUEST>([\s\S]*?)<\/USER_REQUEST>/);
+      const rawPrompt = (reqMatch ? reqMatch[1] : d.content).replace(/\s+/g, ' ').trim();
+      const shortPrompt = rawPrompt.slice(0, 42) + (rawPrompt.length > 42 ? '…' : '');
+      if (currentTurn && currentTurn.steps > 0) {
+        currentTurn.status = 'done';
+        turnRuns.push(currentTurn);
+      }
+      const pm = parseModelAndEffort(rawModel);
+      currentTurn = {
+        key: `turn-${turnRuns.length + 1}`,
+        index: turnRuns.length + 1,
+        description: shortPrompt || `Task #${turnRuns.length + 1}`,
+        role: 'developer',
+        effort: pm.effort,
+        effortColor: pm.effortColor,
+        model: pm.model,
+        status: 'running',
+        tokens: 0,
+        ctx: 0,
+        cost: 0,
+        elapsedSec: 1,
+        steps: 0,
+      };
     }
 
     if (d.type === 'PLANNER_RESPONSE') {
@@ -307,13 +422,26 @@ function analyzeConversation(forcedId, uiModelLabel) {
       const stepCost = getPrice(rawModel, inp, out, cache);
       totalCost += stepCost;
 
+      if (currentTurn) {
+        currentTurn.steps++;
+        currentTurn.tokens += latestCtx;
+        currentTurn.ctx = latestCtx;
+        currentTurn.cost += stepCost;
+        const pm = parseModelAndEffort(rawModel);
+        currentTurn.model = pm.model;
+        currentTurn.effort = pm.effort;
+        currentTurn.effortColor = pm.effortColor;
+      }
+
       const tools = Array.isArray(d.tool_calls) ? d.tool_calls : [];
       for (const tc of tools) {
         if (tc.name === 'invoke_subagent' && tc.args) {
           const roleTitle = tc.args.Role || tc.args.TypeName || `Subagent ${subagentsList.length + 1}`;
           const role = roleOf(tc.args.TypeName, roleTitle);
-          const parentCleanModel = parseModelAndEffort(rawModel).model;
-          const resolvedModel = resolveSubagentModelName(tc.args.Model, parentCleanModel);
+          const parentParsed = parseModelAndEffort(rawModel);
+          const resolvedModel = resolveSubagentModelName(tc.args.Model, parentParsed.model);
+          const subEffort = /flash/i.test(resolvedModel) ? 'light' : parentParsed.effort;
+          const subEffortColor = /flash/i.test(resolvedModel) ? '#3BB8A0' : parentParsed.effortColor;
           const invokedAtMs = stepTime || Date.now();
           subagentsList.push({
             key: `sub-${d.step_index}-${subagentsList.length}`,
@@ -321,6 +449,8 @@ function analyzeConversation(forcedId, uiModelLabel) {
             subId: null,
             description: roleTitle,
             role,
+            effort: subEffort,
+            effortColor: subEffortColor,
             roleColor: ROLE_COLORS[role] || ROLE_COLORS.explore,
             model: resolvedModel,
             status: 'running',
@@ -402,18 +532,28 @@ function analyzeConversation(forcedId, uiModelLabel) {
     }
   }
 
+  if (currentTurn && currentTurn.steps > 0 && !isRunning) {
+    currentTurn.status = 'done';
+    turnRuns.push(currentTurn);
+  }
+
   if (isRunning && lastStepMs) {
     const liveDelta = Math.max(0, (now - lastStepMs) / 1000);
     if (liveDelta <= 90) activeElapsedSec += liveDelta;
   }
 
-  // Only show subagents while they are actively running.
-  // Once all subagents finish, collapse them so ONLY the single Main Agent row remains.
-  const visibleSubagents = subagentsList.filter(sa => sa.status === 'running');
+  const runningSubagents = subagentsList.filter(sa => sa.status === 'running');
+  // Completed subagents (or completed task turns if no subagents were invoked in this chat)
+  const finishedSubagents = subagentsList.length > 0
+    ? subagentsList.filter(sa => sa.status !== 'running').reverse()
+    : turnRuns.map(t => ({ ...t, elapsedSec: Math.max(1, Math.round(t.elapsedSec)) })).reverse();
+
+  const doneCost = finishedSubagents.reduce((sum, item) => sum + (item.cost || 0), 0);
 
   const parsedModel = parseModelAndEffort(rawModel);
   const ctxPct = Math.min(100, Math.round((latestCtx / WINDOW_LIMIT) * 100));
   const elapsedSec = Math.max(1, Math.round(activeElapsedSec));
+  const week = getWeeklyUsage();
 
   return {
     conversationId: target.conversationId,
@@ -435,14 +575,17 @@ function analyzeConversation(forcedId, uiModelLabel) {
     cost: totalCost + subCostTotal,
     elapsedSec,
     stepsCount,
-    subagents: visibleSubagents,
-    totalSubagentsCount: subagentsList.length,
+    subagents: runningSubagents,
+    finishedSubagents,
+    doneCount: finishedSubagents.length,
+    doneCost,
+    week,
     updatedAt: now,
   };
 }
 
 // ============================================================================
-// Native DOM Injection Script (runs inside Antigravity's Renderer)
+// Native DOM Injection Script (Exact claude-agent-panel layout + Antigravity branding)
 // ============================================================================
 function buildInjectorScript() {
   return `(() => {
@@ -461,14 +604,17 @@ function buildInjectorScript() {
         border: 1px solid #282828;
         color: #E5E5E5;
         font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-        font-size: 12px;
+        font-size: 12.5px;
         line-height: 1.35;
         user-select: none;
         position: relative;
         z-index: 1;
         overflow: hidden;
         box-shadow: 0 2px 10px rgba(0, 0, 0, 0.28);
-        transition: opacity 0.15s ease;
+        padding: 8px 12px;
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
       }
       #ag-native-agent-panel.ag-hidden {
         display: none !important;
@@ -479,195 +625,176 @@ function buildInjectorScript() {
       .ag-ap-header {
         display: flex;
         align-items: center;
-        justify-content: space-between;
-        padding: 6px 12px;
-        border-bottom: 1px solid #232323;
-        background: #1B1B1B;
-      }
-      #ag-native-agent-panel.ag-collapsed .ag-ap-header {
-        border-bottom: none;
+        gap: 8px;
+        width: 100%;
+        min-width: 0;
       }
       #ag-native-agent-panel.ag-collapsed .ag-ap-body {
         display: none !important;
       }
-      .ag-ap-header-left {
+      .ag-ap-title {
+        font-weight: 700;
+        font-size: 12.5px;
+        color: #F3F4F6;
+        white-space: nowrap;
+      }
+      .ag-ap-summary {
+        font-size: 12px;
+        color: #8E8E93;
+        font-variant-numeric: tabular-nums;
+        white-space: nowrap;
+      }
+      .ag-ap-spacer {
+        flex: 1 1 auto;
+        min-width: 8px;
+      }
+      .ag-ap-week-wrap {
         display: flex;
         align-items: center;
         gap: 6px;
-        min-width: 0;
-      }
-      .ag-ap-title {
-        font-weight: 600;
         font-size: 12px;
-        color: #F0F0F0;
-        letter-spacing: -0.01em;
-      }
-      .ag-ap-active-count {
-        font-size: 10.5px;
-        font-weight: 600;
-        padding: 1px 6px;
-        border-radius: 999px;
-        background: rgba(56, 189, 248, 0.14);
-        color: #38BDF8;
-      }
-      .ag-ap-summary {
-        font-size: 11.5px;
         color: #8E8E93;
+        white-space: nowrap;
         font-variant-numeric: tabular-nums;
       }
-      .ag-ap-hide-btn {
-        background: transparent;
-        border: none;
-        color: #8E8E93;
+      .ag-ap-week-bar {
+        font-family: "Consolas", "SF Mono", "Courier New", monospace;
+        font-size: 12px;
+        letter-spacing: 0.5px;
+        line-height: 1;
+        display: inline-flex;
+        align-items: center;
+      }
+      .ag-ap-week-empty {
+        color: #6E6E73;
+      }
+      .ag-ap-pill-btn {
+        background: #2C2C30;
+        border: 1px solid #3A3A3E;
+        color: #E5E5E5;
         font-size: 11.5px;
         font-weight: 500;
         cursor: pointer;
-        padding: 1px 6px;
-        border-radius: 4px;
-        transition: color 0.12s ease, background 0.12s ease;
+        padding: 2px 9px;
+        border-radius: 5px;
+        line-height: 1.3;
+        transition: background 0.12s ease, border-color 0.12s ease;
+        flex-shrink: 0;
       }
-      .ag-ap-hide-btn:hover {
-        color: #F0F0F0;
-        background: rgba(255, 255, 255, 0.06);
+      .ag-ap-pill-btn:hover {
+        background: #38383D;
+        border-color: #4A4A50;
       }
       .ag-ap-body {
         display: flex;
         flex-direction: column;
-        padding: 4px 10px 6px 10px;
-        gap: 2px;
+        gap: 5px;
       }
       .ag-ap-row {
         display: flex;
         align-items: center;
-        justify-content: space-between;
-        gap: 8px;
-        padding: 4px 2px;
-        border-radius: 6px;
-        min-height: 26px;
-      }
-      .ag-ap-row-sub {
-        padding-left: 8px;
-        border-top: 1px solid rgba(255, 255, 255, 0.035);
-      }
-      .ag-ap-left {
-        display: flex;
-        align-items: center;
         gap: 7px;
-        min-width: 0;
-        flex: 1;
-        overflow: hidden;
+        min-height: 24px;
+        width: 100%;
       }
       .ag-ap-icon-wrap {
-        position: relative;
-        width: 18px;
-        height: 18px;
+        width: 22px;
+        height: 20px;
         display: flex;
         align-items: center;
         justify-content: center;
         flex-shrink: 0;
       }
       .ag-ap-brand-svg {
-        width: 17px;
-        height: 17px;
+        width: 19px;
+        height: 19px;
         display: block;
       }
-      .ag-ap-status-dot {
-        position: absolute;
-        right: -1px;
-        bottom: -1px;
-        width: 6px;
-        height: 6px;
-        border-radius: 50%;
-        background: #3B82F6;
-        border: 1.5px solid #171717;
+      .ag-ap-mark {
+        font-size: 12px;
+        font-weight: 700;
+        line-height: 1;
+        flex-shrink: 0;
       }
-      .ag-ap-status-dot.running {
-        background: #10B981;
-        box-shadow: 0 0 6px #10B981;
-        animation: agPulseDot 1.2s infinite ease-in-out;
+      .ag-ap-agent-name {
+        font-weight: 700;
+        font-size: 12.5px;
+        color: #F0F0F0;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        max-width: 240px;
       }
-      @keyframes agPulseDot {
-        0%, 100% { transform: scale(1); opacity: 1; }
-        50% { transform: scale(1.25); opacity: 0.65; }
+      .ag-ap-effort {
+        font-size: 12px;
+        font-weight: 500;
+        white-space: nowrap;
+        flex-shrink: 0;
+      }
+      .ag-ap-model {
+        font-size: 12px;
+        color: #8E8E93;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .ag-ap-line-bar {
+        font-family: "Consolas", "SF Mono", monospace;
+        font-size: 12px;
+        letter-spacing: -0.5px;
+        display: inline-flex;
+        align-items: center;
+        flex-shrink: 0;
+      }
+      .ag-ap-line-dim {
+        color: #3E3E42;
+      }
+      .ag-ap-metric {
+        font-size: 12px;
+        color: #8E8E93;
+        font-variant-numeric: tabular-nums;
+        white-space: nowrap;
+        flex-shrink: 0;
+      }
+      .ag-ap-done-bar {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding-top: 2px;
+      }
+      .ag-ap-done-text {
+        font-size: 12px;
+        color: #8E8E93;
+        font-variant-numeric: tabular-nums;
+      }
+      .ag-ap-done-list {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        padding-left: 4px;
+        border-left: 2px solid #28282C;
+        margin-top: 2px;
       }
       @keyframes agSpin {
         0% { transform: rotate(0deg); }
         100% { transform: rotate(360deg); }
       }
       .ag-ap-gemini-sub-icon {
-        width: 15px;
-        height: 15px;
+        width: 17px;
+        height: 17px;
         flex-shrink: 0;
       }
       .ag-ap-gemini-sub-icon.running {
         animation: agSpin 3s linear infinite;
-      }
-      .ag-ap-agent-name {
-        font-weight: 600;
-        font-size: 12px;
-        color: #ECECEC;
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        max-width: 190px;
-      }
-      .ag-ap-badge {
-        font-size: 10.5px;
-        font-weight: 600;
-        padding: 1px 6px;
-        border-radius: 5px;
-        white-space: nowrap;
-        flex-shrink: 0;
-      }
-      .ag-ap-model {
-        font-size: 12px;
-        color: #9A9A9E;
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
-      }
-      .ag-ap-ctx-wrap {
-        display: flex;
-        align-items: center;
-        gap: 5px;
-        flex-shrink: 0;
-        margin-left: 2px;
-      }
-      .ag-ap-ctx-bar {
-        width: 42px;
-        height: 4px;
-        border-radius: 999px;
-        background: #2C2C2E;
-        overflow: hidden;
-      }
-      .ag-ap-ctx-fill {
-        height: 100%;
-        border-radius: 999px;
-        transition: width 0.25s ease;
-      }
-      .ag-ap-ctx-pct {
-        font-size: 11px;
-        color: #8E8E93;
-        font-variant-numeric: tabular-nums;
-      }
-      .ag-ap-right {
-        display: flex;
-        align-items: center;
-        gap: 5px;
-        font-size: 11.5px;
-        color: #8E8E93;
-        font-variant-numeric: tabular-nums;
-        white-space: nowrap;
-        flex-shrink: 0;
-      }
-      .ag-ap-sep {
-        color: #555558;
       }
     \`;
     document.head.appendChild(styleEl);
 
     if (typeof window.__agPanelCollapsed === 'undefined') {
       window.__agPanelCollapsed = false;
+    }
+    if (typeof window.__agDoneOpen === 'undefined') {
+      window.__agDoneOpen = false;
     }
     if (typeof window.__agUserTypedMs === 'undefined') {
       window.__agUserTypedMs = 0;
@@ -676,15 +803,16 @@ function buildInjectorScript() {
     function fmtTokens(n) {
       if (!n || n <= 0) return '0';
       if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M';
-      if (n >= 1e3) return (n / 1e3).toFixed(1) + 'k';
+      if (n >= 1e3) return Math.round(n / 1e3) + 'k';
       return String(n);
     }
 
     function fmtTime(sec) {
       const s = Math.max(0, Math.floor(sec || 0));
-      const m = Math.floor(s / 60);
-      const r = s % 60;
-      return m + ':' + (r < 10 ? '0' : '') + r;
+      const h = Math.floor(s / 3600);
+      const mm = String(Math.floor((s % 3600) / 60)).padStart(h ? 2 : 1, '0');
+      const ss = String(s % 60).padStart(2, '0');
+      return h ? (h + ':' + mm + ':' + ss) : (mm + ':' + ss);
     }
 
     function fmtCost(c) {
@@ -692,10 +820,10 @@ function buildInjectorScript() {
       return '≈$' + val.toFixed(2);
     }
 
-    function ctxColor(pct) {
-      if (pct >= 85) return '#EF4444';
-      if (pct >= 65) return '#F59E0B';
-      return '#3B82F6';
+    function renderLineBar(pct, color) {
+      const w = 6;
+      const fill = Math.min(w, Math.max(1, Math.round(((pct || 0) / 100) * w)));
+      return \`<span class="ag-ap-line-bar"><span style="color:\${color}">\${'━'.repeat(fill)}</span><span class="ag-ap-line-dim">\${'━'.repeat(w - fill)}</span></span>\`;
     }
 
     const ANTIGRAVITY_BRAND_SVG = \`
@@ -712,23 +840,53 @@ function buildInjectorScript() {
       </svg>
     \`;
 
+    const GEMINI_SUB_SVG = (isRun) => \`
+      <svg class="ag-ap-gemini-sub-icon \${isRun ? 'running' : ''}" viewBox="0 0 24 24" fill="none">
+        <path d="M12 2C12 7.52 16.48 12 22 12C16.48 12 12 16.48 12 22C12 16.48 7.52 12 2 12C7.52 12 12 7.52 12 2Z" fill="url(#agGemGrad)" />
+        <defs>
+          <linearGradient id="agGemGrad" x1="2" y1="2" x2="22" y2="22" gradientUnits="userSpaceOnUse">
+            <stop offset="0%" stop-color="#4A9FD9" />
+            <stop offset="50%" stop-color="#A78BFA" />
+            <stop offset="100%" stop-color="#F472B6" />
+          </linearGradient>
+        </defs>
+      </svg>
+    \`;
+
+    const WORKING_DOTS_SVG = (color) => \`
+      <svg width="18" height="9" viewBox="0 0 16 8" xmlns="http://www.w3.org/2000/svg">
+        <circle cx="3" cy="4" r="1.6" fill="\${color}">
+          <animate attributeName="opacity" values="1;0.35;1;1" keyTimes="0;0.25;0.5;1" dur="0.8s" begin="0s" repeatCount="indefinite"/>
+        </circle>
+        <circle cx="8" cy="4" r="1.6" fill="\${color}">
+          <animate attributeName="opacity" values="1;0.35;1;1" keyTimes="0;0.25;0.5;1" dur="0.8s" begin="0.13s" repeatCount="indefinite"/>
+        </circle>
+        <circle cx="13" cy="4" r="1.6" fill="\${color}">
+          <animate attributeName="opacity" values="1;0.35;1;1" keyTimes="0;0.25;0.5;1" dur="0.8s" begin="0.26s" repeatCount="indefinite"/>
+        </circle>
+      </svg>
+    \`;
+
     function ensurePanelElement() {
       const inputBox = document.getElementById('antigravity.agentSidePanelInputBox');
       if (!inputBox || !inputBox.parentElement) return null;
 
       let panel = document.getElementById('ag-native-agent-panel');
+      if (panel && !panel.querySelector('#ag-ap-week-wrap')) {
+        panel.remove();
+        panel = null;
+      }
       if (!panel) {
         panel = document.createElement('div');
         panel.id = 'ag-native-agent-panel';
         panel.className = 'ag-hidden';
         panel.innerHTML = \`
           <div class="ag-ap-header">
-            <div class="ag-ap-header-left">
-              <span class="ag-ap-title">Agents</span>
-              <span class="ag-ap-active-count" id="ag-ap-active-count" style="display:none"></span>
-              <span class="ag-ap-summary" id="ag-ap-header-summary"></span>
-            </div>
-            <button type="button" class="ag-ap-hide-btn" id="ag-ap-toggle-btn">Hide</button>
+            <span class="ag-ap-title" id="ag-ap-title">Agents</span>
+            <span class="ag-ap-summary" id="ag-ap-header-summary"></span>
+            <div class="ag-ap-spacer"></div>
+            <div class="ag-ap-week-wrap" id="ag-ap-week-wrap"></div>
+            <button type="button" class="ag-ap-pill-btn" id="ag-ap-toggle-btn">Hide</button>
           </div>
           <div class="ag-ap-body" id="ag-ap-body"></div>
         \`;
@@ -741,9 +899,20 @@ function buildInjectorScript() {
             e.stopPropagation();
             window.__agPanelCollapsed = !window.__agPanelCollapsed;
             panel.classList.toggle('ag-collapsed', window.__agPanelCollapsed);
-            toggleBtn.textContent = window.__agPanelCollapsed ? 'Show' : 'Hide';
+            toggleBtn.textContent = window.__agPanelCollapsed ? 'Show agents' : 'Hide';
           });
         }
+
+        // Delegate click for the bottom "Show" / "Hide" completed subagents button
+        panel.addEventListener('click', (e) => {
+          const btn = e.target.closest('#ag-ap-done-toggle-btn');
+          if (btn) {
+            e.preventDefault();
+            e.stopPropagation();
+            window.__agDoneOpen = !window.__agDoneOpen;
+            if (window.__agLastData) renderPanel(window.__agLastData);
+          }
+        });
 
         inputBox.addEventListener('keydown', () => {
           window.__agUserTypedMs = Date.now();
@@ -761,6 +930,32 @@ function buildInjectorScript() {
       return panel;
     }
 
+    function renderAgentRow(item, isMain) {
+      const isRunning = item.status === 'running';
+      const effColor = item.effortColor || '#4A9FD9';
+      const pct = Math.min(100, Math.round(((item.ctx || 0) / 1000000) * 100));
+      const markHtml = isRunning
+        ? WORKING_DOTS_SVG(effColor)
+        : isMain
+          ? '<span class="ag-ap-mark" style="color:#9AA0A6">◦</span>'
+          : '<span class="ag-ap-mark" style="color:#3BA55C">✓</span>';
+
+      return \`
+        <div class="ag-ap-row">
+          <div class="ag-ap-icon-wrap">\${isMain ? ANTIGRAVITY_BRAND_SVG : GEMINI_SUB_SVG(isRunning)}</div>
+          \${markHtml}
+          <span class="ag-ap-agent-name">\${item.description || 'Main agent'}</span>
+          <span class="ag-ap-effort" style="color:\${effColor}">\${item.effort || 'medium'}</span>
+          <span class="ag-ap-model">\${item.model || 'Gemini 4 Argon'}</span>
+          <div class="ag-ap-spacer"></div>
+          \${renderLineBar(pct, effColor)}
+          <span class="ag-ap-metric">\${fmtTokens(item.ctx || item.tokens)}</span>
+          <span class="ag-ap-metric">\${fmtTime(item.elapsedSec)}</span>
+          <span class="ag-ap-metric">\${fmtCost(item.cost)}</span>
+        </div>
+      \`;
+    }
+
     function renderPanel(data) {
       window.__agLastData = data;
       const panel = ensurePanelElement();
@@ -775,83 +970,71 @@ function buildInjectorScript() {
       panel.classList.remove('ag-hidden');
       panel.classList.toggle('ag-collapsed', !!window.__agPanelCollapsed);
 
+      const runningSubs = Array.isArray(data.subagents) ? data.subagents : [];
+      const finishedSubs = Array.isArray(data.finishedSubagents) ? data.finishedSubagents : [];
+
+      const titleEl = panel.querySelector('#ag-ap-title');
+      if (titleEl) {
+        titleEl.textContent = (window.__agPanelCollapsed && runningSubs.length > 0)
+          ? \`Agents · \${runningSubs.length} running\`
+          : 'Agents';
+      }
+
       const summaryEl = panel.querySelector('#ag-ap-header-summary');
       if (summaryEl) {
         summaryEl.textContent = \`\${fmtCost(data.cost)} · \${fmtTokens(data.totalTokens)} · \${fmtTime(data.elapsedSec)}\`;
       }
 
-      const activeCountEl = panel.querySelector('#ag-ap-active-count');
-      const runningSubs = Array.isArray(data.subagents) ? data.subagents : [];
-      if (activeCountEl) {
-        if (runningSubs.length > 0) {
-          activeCountEl.style.display = 'inline-block';
-          activeCountEl.textContent = \`1 main + \${runningSubs.length} sub\`;
-        } else {
-          activeCountEl.style.display = 'none';
-        }
+      // Render Weekly Usage Bar in Header (matches claude-agent-panel: "Usage █░░░░░░░░░ 11% / 15% Week, Under Pace")
+      const weekWrap = panel.querySelector('#ag-ap-week-wrap');
+      if (weekWrap && data.week) {
+        const w = 10;
+        const fill = Math.min(w, Math.max(1, Math.round((data.week.used / 100) * w)));
+        const barHtml = \`<span class="ag-ap-week-bar"><span style="color:\${data.week.color}">\${'█'.repeat(fill)}</span><span class="ag-ap-week-empty">\${'░'.repeat(w - fill)}</span></span>\`;
+        weekWrap.innerHTML = \`
+          <span>Usage</span>
+          \${barHtml}
+          <span>\${data.week.used}% / \${data.week.elapsed}% Week, \${data.week.verdict}</span>
+        \`;
       }
 
       const bodyEl = panel.querySelector('#ag-ap-body');
       if (!bodyEl) return;
 
-      const isMainRunning = data.status === 'running';
-      const fillCol = ctxColor(data.ctxPct || 0);
+      // 1. Main Agent Row
+      let html = renderAgentRow({
+        description: 'Main agent',
+        status: data.status,
+        effort: data.effort,
+        effortColor: data.effortColor,
+        model: data.model,
+        ctx: data.ctxTokens,
+        tokens: data.mainTokens,
+        elapsedSec: data.elapsedSec,
+        cost: data.mainCost,
+      }, true);
 
-      let html = \`
-        <div class="ag-ap-row">
-          <div class="ag-ap-left">
-            <div class="ag-ap-icon-wrap" title="Google Antigravity">
-              \${ANTIGRAVITY_BRAND_SVG}
-              <span class="ag-ap-status-dot \${isMainRunning ? 'running' : ''}"></span>
-            </div>
-            <span class="ag-ap-agent-name">Main agent</span>
-            <span class="ag-ap-badge" style="color:\${data.effortColor || '#4A9FD9'};background:\${data.effortBg || 'rgba(74,159,217,0.15)'}">\${data.effort || 'medium'}</span>
-            <span class="ag-ap-model">\${data.model || 'Gemini 4 Argon'}</span>
-            <div class="ag-ap-ctx-wrap" title="Context window: \${fmtTokens(data.ctxTokens)} / \${fmtTokens(data.windowLimit)}">
-              <div class="ag-ap-ctx-bar">
-                <div class="ag-ap-ctx-fill" style="width:\${Math.max(2, data.ctxPct || 0)}%;background:\${fillCol}"></div>
-              </div>
-              <span class="ag-ap-ctx-pct">\${data.ctxPct || 0}%</span>
-            </div>
-          </div>
-          <div class="ag-ap-right">
-            <span>\${fmtTokens(data.mainTokens)}</span>
-            <span class="ag-ap-sep">·</span>
-            <span>\${fmtTime(data.elapsedSec)}</span>
-            <span class="ag-ap-sep">·</span>
-            <span>\${fmtCost(data.mainCost)}</span>
-          </div>
-        </div>
-      \`;
-
+      // 2. Currently Running Subagent Rows
       for (const sa of runningSubs) {
-        const rc = sa.roleColor || { fg: '#38BDF8', bg: 'rgba(56,189,248,0.14)' };
+        html += renderAgentRow(sa, false);
+      }
+
+      // 3. Bottom Completed Subagents / Runs Row ("8 done · ≈$4.82 [Show]")
+      if (finishedSubs.length > 0) {
+        const doneOpen = !!window.__agDoneOpen;
         html += \`
-          <div class="ag-ap-row ag-ap-row-sub">
-            <div class="ag-ap-left">
-              <svg class="ag-ap-gemini-sub-icon running" viewBox="0 0 24 24" fill="none" title="Gemini Subagent">
-                <path d="M12 2C12 7.52 16.48 12 22 12C16.48 12 12 16.48 12 22C12 16.48 7.52 12 2 12C7.52 12 12 7.52 12 2Z" fill="url(#agGemGrad)" />
-                <defs>
-                  <linearGradient id="agGemGrad" x1="2" y1="2" x2="22" y2="22" gradientUnits="userSpaceOnUse">
-                    <stop offset="0%" stop-color="#4A9FD9" />
-                    <stop offset="50%" stop-color="#A78BFA" />
-                    <stop offset="100%" stop-color="#F472B6" />
-                  </linearGradient>
-                </defs>
-              </svg>
-              <span class="ag-ap-agent-name">\${sa.description || ('Subagent ' + sa.index)}</span>
-              <span class="ag-ap-badge" style="color:\${rc.fg};background:\${rc.bg}">\${sa.role || 'explore'}</span>
-              <span class="ag-ap-model">\${sa.model || 'Gemini 3.8 Flash'}</span>
-            </div>
-            <div class="ag-ap-right">
-              <span>\${fmtTokens(sa.tokens)}</span>
-              <span class="ag-ap-sep">·</span>
-              <span>\${fmtTime(sa.elapsedSec)}</span>
-              <span class="ag-ap-sep">·</span>
-              <span>\${fmtCost(sa.cost)}</span>
-            </div>
+          <div class="ag-ap-done-bar">
+            <span class="ag-ap-done-text">\${finishedSubs.length} done · \${fmtCost(data.doneCost)}</span>
+            <button type="button" class="ag-ap-pill-btn" id="ag-ap-done-toggle-btn">\${doneOpen ? 'Hide' : 'Show'}</button>
           </div>
         \`;
+        if (doneOpen) {
+          html += '<div class="ag-ap-done-list">';
+          for (const doneItem of finishedSubs) {
+            html += renderAgentRow(doneItem, false);
+          }
+          html += '</div>';
+        }
       }
 
       bodyEl.innerHTML = html;
