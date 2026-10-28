@@ -14,12 +14,10 @@ const path = require('path');
 const os = require('os');
 
 // Resilience: never crash on transient errors
-process.on('uncaughtException', (err) => {
-  // Silent or log without crashing
-});
-process.on('unhandledRejection', () => {
-  // Silent or log without crashing
-});
+process.on('uncaughtException', () => {});
+process.on('unhandledRejection', () => {});
+if (process.stdout && process.stdout.on) process.stdout.on('error', () => {});
+if (process.stderr && process.stderr.on) process.stderr.on('error', () => {});
 
 const PORT = parseInt(process.env.AG_PANEL_PORT || '4747', 10);
 const HOME = os.homedir();
