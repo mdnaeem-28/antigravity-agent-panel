@@ -543,23 +543,23 @@ function buildInjectorScript() {
       #ag-native-agent-panel {
         width: 100%;
         box-sizing: border-box;
-        margin-bottom: 6px;
-        border-radius: 12px;
+        margin-bottom: 4px;
+        border-radius: 10px;
         background: #171717;
         border: 1px solid #282828;
         color: #E5E5E5;
         font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-        font-size: 12.5px;
-        line-height: 1.35;
+        font-size: 12px;
+        line-height: 1.3;
         user-select: none;
         position: relative;
         z-index: 1;
         overflow: hidden;
-        box-shadow: 0 2px 10px rgba(0, 0, 0, 0.28);
-        padding: 8px 12px;
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.28);
+        padding: 5px 10px;
         display: flex;
         flex-direction: column;
-        gap: 6px;
+        gap: 3px;
       }
       #ag-native-agent-panel.ag-menu-open {
         pointer-events: none;
@@ -567,57 +567,58 @@ function buildInjectorScript() {
       .ag-ap-header {
         display: flex;
         align-items: center;
-        gap: 8px;
+        gap: 6px;
         width: 100%;
         min-width: 0;
       }
       #ag-native-agent-panel.ag-collapsed .ag-ap-body,
-      #ag-native-agent-panel.ag-collapsed #ag-ap-quota-section {
+      #ag-native-agent-panel.ag-collapsed #ag-ap-quota-bar,
+      #ag-native-agent-panel.ag-collapsed #ag-ap-quota-details {
         display: none !important;
       }
       .ag-ap-title {
         font-weight: 700;
-        font-size: 12.5px;
+        font-size: 12px;
         color: #F3F4F6;
         white-space: nowrap;
       }
       .ag-ap-summary {
-        font-size: 12px;
+        font-size: 11.5px;
         color: #8E8E93;
         font-variant-numeric: tabular-nums;
         white-space: nowrap;
       }
       .ag-ap-spacer {
         flex: 1 1 auto;
-        min-width: 8px;
+        min-width: 6px;
       }
       .ag-ap-quota-wrap {
         display: flex;
         align-items: center;
-        gap: 5px;
-        font-size: 11.5px;
+        gap: 4px;
+        font-size: 11px;
         white-space: nowrap;
         font-variant-numeric: tabular-nums;
       }
       .ag-ap-quota-chip {
         display: inline-flex;
         align-items: center;
-        gap: 4px;
-        padding: 1.5px 6px;
+        gap: 3px;
+        padding: 1px 5px;
         border-radius: 4px;
         font-weight: 500;
-        line-height: 1.25;
+        line-height: 1.2;
       }
       .ag-ap-pill-btn {
         background: #2C2C30;
         border: 1px solid #3A3A3E;
         color: #E5E5E5;
-        font-size: 11.5px;
+        font-size: 11px;
         font-weight: 500;
         cursor: pointer;
-        padding: 2px 9px;
-        border-radius: 5px;
-        line-height: 1.3;
+        padding: 1.5px 7px;
+        border-radius: 4px;
+        line-height: 1.25;
         transition: background 0.12s ease, border-color 0.12s ease;
         flex-shrink: 0;
       }
@@ -628,67 +629,67 @@ function buildInjectorScript() {
       .ag-ap-body {
         display: flex;
         flex-direction: column;
-        gap: 5px;
+        gap: 4px;
       }
       .ag-ap-row {
         display: flex;
         align-items: center;
-        gap: 7px;
-        min-height: 24px;
+        gap: 6px;
+        min-height: 22px;
         width: 100%;
       }
       .ag-ap-icon-wrap {
-        width: 22px;
-        height: 20px;
+        width: 20px;
+        height: 18px;
         display: flex;
         align-items: center;
         justify-content: center;
         flex-shrink: 0;
       }
       .ag-ap-brand-svg {
-        width: 19px;
-        height: 19px;
+        width: 18px;
+        height: 18px;
         display: block;
       }
       .ag-ap-mark {
-        font-size: 12px;
+        font-size: 11px;
         font-weight: 700;
         line-height: 1;
         flex-shrink: 0;
       }
       .ag-ap-agent-name {
         font-weight: 700;
-        font-size: 12.5px;
+        font-size: 12px;
         color: #F0F0F0;
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
-        max-width: 200px;
+        max-width: 180px;
       }
       .ag-ap-effort {
-        font-size: 12px;
+        font-size: 11px;
         font-weight: 500;
         white-space: nowrap;
         flex-shrink: 0;
       }
       .ag-ap-model {
-        font-size: 12px;
+        font-size: 11px;
         color: #8E8E93;
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
       }
       .ag-ap-live-badge {
-        font-size: 11px;
+        font-size: 10.5px;
         font-weight: 600;
-        padding: 1px 5px;
-        border-radius: 4px;
+        padding: 0.5px 4.5px;
+        border-radius: 3px;
         white-space: nowrap;
         line-height: 1.2;
       }
       .ag-ap-line-bar {
         font-family: "Consolas", "SF Mono", monospace;
-        font-size: 12px;
+        font-size: 11px;
         letter-spacing: -0.5px;
         display: inline-flex;
         align-items: center;
@@ -698,7 +699,7 @@ function buildInjectorScript() {
         color: #3E3E42;
       }
       .ag-ap-metric {
-        font-size: 12px;
+        font-size: 11.5px;
         color: #8E8E93;
         font-variant-numeric: tabular-nums;
         white-space: nowrap;
@@ -707,37 +708,46 @@ function buildInjectorScript() {
       .ag-ap-done-bar {
         display: flex;
         align-items: center;
-        gap: 8px;
-        padding-top: 2px;
+        gap: 6px;
+        padding-top: 1px;
       }
       .ag-ap-done-text {
-        font-size: 12px;
+        font-size: 11px;
         color: #8E8E93;
         font-variant-numeric: tabular-nums;
       }
       .ag-ap-done-list {
         display: flex;
         flex-direction: column;
-        gap: 4px;
+        gap: 3px;
         padding-left: 4px;
         border-left: 2px solid #28282C;
         margin-top: 2px;
       }
-      .ag-ap-quota-section {
+      .ag-ap-quota-bar {
         border-top: 1px solid #26262a;
-        margin-top: 5px;
-        padding-top: 6px;
+        margin-top: 2px;
+        padding-top: 3.5px;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 11px;
+        color: #9CA3AF;
+        line-height: 1;
+      }
+      .ag-ap-quota-details {
         display: grid;
         grid-template-columns: repeat(3, 1fr);
-        gap: 7px;
-        font-size: 11px;
+        gap: 6px;
+        margin-top: 3px;
+        font-size: 10.5px;
       }
       .ag-ap-qcard {
-        border-radius: 6px;
-        padding: 6px 9px;
+        border-radius: 5px;
+        padding: 4px 7px;
         display: flex;
         flex-direction: column;
-        gap: 3.5px;
+        gap: 3px;
       }
       @keyframes agSpin {
         0% { transform: rotate(0deg); }
@@ -759,6 +769,9 @@ function buildInjectorScript() {
     }
     if (typeof window.__agDoneOpen === 'undefined') {
       window.__agDoneOpen = false;
+    }
+    if (typeof window.__agQuotaDetailsOpen === 'undefined') {
+      window.__agQuotaDetailsOpen = false;
     }
 
     let cachedQuotaSummary = null;
@@ -968,7 +981,8 @@ function buildInjectorScript() {
             <button type="button" class="ag-ap-pill-btn" id="ag-ap-toggle-btn">Hide</button>
           </div>
           <div class="ag-ap-body" id="ag-ap-body"></div>
-          <div class="ag-ap-quota-section" id="ag-ap-quota-section"></div>
+          <div class="ag-ap-quota-bar" id="ag-ap-quota-bar"></div>
+          <div class="ag-ap-quota-details" id="ag-ap-quota-details"></div>
         \`;
         inputBox.parentElement.insertBefore(panel, inputBox);
 
@@ -984,6 +998,14 @@ function buildInjectorScript() {
         }
 
         panel.addEventListener('click', (e) => {
+          const detailBtn = e.target.closest('#ag-ap-q-detail-btn');
+          if (detailBtn) {
+            e.preventDefault();
+            e.stopPropagation();
+            window.__agQuotaDetailsOpen = !window.__agQuotaDetailsOpen;
+            if (window.__agLastData) renderPanel(window.__agLastData);
+            return;
+          }
           const btn = e.target.closest('#ag-ap-done-toggle-btn');
           if (btn) {
             e.preventDefault();
@@ -1139,60 +1161,100 @@ function buildInjectorScript() {
         bodyEl.innerHTML = html;
       }
 
-      // 3. Render Dedicated Lower Section: 3 Real Quota Buckets & Weekly Reset Timers
-      const qSection = panel.querySelector('#ag-ap-quota-section');
-      if (qSection && Array.isArray(groups) && groups.length > 0) {
-        let cardsHtml = '';
-        for (const g of groups) {
-          const isArgon = /argon/i.test(g.displayName);
-          const isGemini = /gemini models/i.test(g.displayName);
-          const isClaude = /claude/i.test(g.displayName);
+      // 3. Render Ultra-Compact Quota Bar & Optional Expandable Details
+      const qBar = panel.querySelector('#ag-ap-quota-bar');
+      const qDetails = panel.querySelector('#ag-ap-quota-details');
+      if (qBar && Array.isArray(groups) && groups.length > 0) {
+        const argonG = groups.find(g => /argon/i.test(g.displayName));
+        const geminiG = groups.find(g => /gemini models/i.test(g.displayName));
+        const claudeG = groups.find(g => /claude/i.test(g.displayName));
 
-          const weeklyBucket = (g.buckets || []).find(b => b.window === 'weekly');
-          const h5Bucket = (g.buckets || []).find(b => b.window === '5h');
+        const aBucket = (argonG?.buckets || []).find(b => b.window === 'weekly');
+        const gBucket = (geminiG?.buckets || []).find(b => b.window === 'weekly');
+        const cBucket = (claudeG?.buckets || []).find(b => b.window === 'weekly');
 
-          const weeklyPct = weeklyBucket ? Math.round(weeklyBucket.remaining.value * 100) : 0;
-          const weeklyReset = weeklyBucket ? fmtReset(weeklyBucket.resetTime?.seconds) : '';
+        const aPct = aBucket ? Math.round(aBucket.remaining.value * 100) : 0;
+        const aReset = aBucket ? fmtReset(aBucket.resetTime?.seconds) : '';
+        const aCol = aPct <= 0 ? '#EF4444' : aPct < 25 ? '#F59E0B' : '#10B981';
 
-          const h5Pct = h5Bucket ? Math.round(h5Bucket.remaining.value * 100) : null;
-          const h5Reset = h5Bucket ? fmtReset(h5Bucket.resetTime?.seconds) : '';
+        const gPct = gBucket ? Math.round(gBucket.remaining.value * 100) : 0;
+        const gReset = gBucket ? fmtReset(gBucket.resetTime?.seconds) : '';
+        const gCol = gPct <= 0 ? '#EF4444' : gPct < 25 ? '#F59E0B' : '#10B981';
 
-          const statusColor = weeklyPct <= 0 ? '#EF4444' : weeklyPct < 25 ? '#F59E0B' : '#10B981';
-          const statusBg = weeklyPct <= 0 ? 'rgba(239,68,68,0.1)' : 'rgba(16,185,129,0.07)';
-          const borderCol = weeklyPct <= 0 ? 'rgba(239,68,68,0.28)' : 'rgba(16,185,129,0.22)';
+        const cPct = cBucket ? Math.round(cBucket.remaining.value * 100) : 0;
+        const cReset = cBucket ? fmtReset(cBucket.resetTime?.seconds) : '';
+        const cCol = cPct <= 0 ? '#EF4444' : cPct < 25 ? '#F59E0B' : '#10B981';
 
-          let title = g.displayName;
-          let subtitle = 'Flash 3.8 & Flash-Lite';
-          if (isClaude) { title = 'Claude & GPT Models'; subtitle = 'Sonnet 5.5, Opus 5.5, GPT-OSS'; }
-          if (isGemini) { title = 'Gemini Models'; subtitle = 'Flash 3.8 & Flash-Lite'; }
-          if (isArgon) { title = 'Gemini 4 Argon'; subtitle = 'Pro / Thinking tier'; }
+        const isOpen = !!window.__agQuotaDetailsOpen;
 
-          cardsHtml += \`
-            <div class="ag-ap-qcard" style="background:\${statusBg}; border:1px solid \${borderCol};">
-              <div style="display:flex; justify-content:space-between; align-items:center;">
-                <span style="font-weight:600; color:#F3F4F6;">\${title}</span>
-                <span style="color:\${statusColor}; font-weight:700; font-size:11.5px;">\${weeklyPct}% left</span>
-              </div>
-              <div style="font-size:10px; color:#9CA3AF; margin-top:-2px;">\${subtitle}</div>
-              
-              <div style="width:100%; height:3px; background:#2A2A2E; border-radius:2px; overflow:hidden; margin:2px 0;">
-                <div style="width:\${weeklyPct}%; height:100%; background:\${statusColor}; border-radius:2px;"></div>
-              </div>
-              
-              <div style="display:flex; justify-content:space-between; color:#9CA3AF; font-size:10.5px;">
-                <span>Weekly reset:</span>
-                <span style="color:\${weeklyPct <= 0 ? '#EF4444' : '#E5E7EB'}; font-weight:500;">\${weeklyReset || 'N/A'}</span>
-              </div>
-              \${h5Pct !== null ? \`
-                <div style="display:flex; justify-content:space-between; color:#9CA3AF; font-size:10.5px;">
-                  <span>5h limit:</span>
-                  <span style="color:#10B981; font-weight:500;">\${h5Pct}% <span style="color:#6B7280;">(\${h5Reset})</span></span>
+        qBar.innerHTML = \`
+          <span style="font-weight:600; color:#D1D5DB;">Weekly:</span>
+          <span><strong style="color:\${aCol};">Argon \${aPct}%</strong> <span style="color:#6B7280;">(\${aReset || 'N/A'})</span></span>
+          <span style="color:#4B5563;">·</span>
+          <span><strong style="color:\${gCol};">Gemini \${gPct}%</strong> <span style="color:#6B7280;">(\${gReset || 'N/A'})</span></span>
+          <span style="color:#4B5563;">·</span>
+          <span><strong style="color:\${cCol};">Claude & GPT \${cPct}%</strong> <span style="color:#6B7280;">(\${cReset || 'N/A'})</span></span>
+          <div style="flex:1;"></div>
+          <button type="button" class="ag-ap-pill-btn" id="ag-ap-q-detail-btn" style="padding:1px 6px; font-size:10.5px;">\${isOpen ? 'Hide' : 'Details'}</button>
+        \`;
+
+        if (qDetails) {
+          if (isOpen) {
+            qDetails.style.display = 'grid';
+            let cardsHtml = '';
+            for (const g of groups) {
+              const isArgon = /argon/i.test(g.displayName);
+              const isGemini = /gemini models/i.test(g.displayName);
+              const isClaude = /claude/i.test(g.displayName);
+
+              const weeklyBucket = (g.buckets || []).find(b => b.window === 'weekly');
+              const h5Bucket = (g.buckets || []).find(b => b.window === '5h');
+
+              const weeklyPct = weeklyBucket ? Math.round(weeklyBucket.remaining.value * 100) : 0;
+              const weeklyReset = weeklyBucket ? fmtReset(weeklyBucket.resetTime?.seconds) : '';
+
+              const h5Pct = h5Bucket ? Math.round(h5Bucket.remaining.value * 100) : null;
+              const h5Reset = h5Bucket ? fmtReset(h5Bucket.resetTime?.seconds) : '';
+
+              const statusColor = weeklyPct <= 0 ? '#EF4444' : weeklyPct < 25 ? '#F59E0B' : '#10B981';
+              const statusBg = weeklyPct <= 0 ? 'rgba(239,68,68,0.1)' : 'rgba(16,185,129,0.07)';
+              const borderCol = weeklyPct <= 0 ? 'rgba(239,68,68,0.28)' : 'rgba(16,185,129,0.22)';
+
+              let title = g.displayName;
+              let subtitle = 'Flash 3.8 & Flash-Lite';
+              if (isClaude) { title = 'Claude & GPT Models'; subtitle = 'Sonnet 5.5, Opus 5.5, GPT-OSS'; }
+              if (isGemini) { title = 'Gemini Models'; subtitle = 'Flash 3.8 & Flash-Lite'; }
+              if (isArgon) { title = 'Gemini 4 Argon'; subtitle = 'Pro / Thinking tier'; }
+
+              cardsHtml += \`
+                <div class="ag-ap-qcard" style="background:\${statusBg}; border:1px solid \${borderCol};">
+                  <div style="display:flex; justify-content:space-between; align-items:center;">
+                    <span style="font-weight:600; color:#F3F4F6;">\${title}</span>
+                    <span style="color:\${statusColor}; font-weight:700;">\${weeklyPct}% left</span>
+                  </div>
+                  <div style="font-size:10px; color:#9CA3AF; margin-top:-2px;">\${subtitle}</div>
+                  <div style="width:100%; height:3px; background:#2A2A2E; border-radius:2px; overflow:hidden; margin:2px 0;">
+                    <div style="width:\${weeklyPct}%; height:100%; background:\${statusColor}; border-radius:2px;"></div>
+                  </div>
+                  <div style="display:flex; justify-content:space-between; color:#9CA3AF; font-size:10.5px;">
+                    <span>Weekly reset:</span>
+                    <span style="color:\${weeklyPct <= 0 ? '#EF4444' : '#E5E7EB'}; font-weight:500;">\${weeklyReset || 'N/A'}</span>
+                  </div>
+                  \${h5Pct !== null ? \`
+                    <div style="display:flex; justify-content:space-between; color:#9CA3AF; font-size:10.5px;">
+                      <span>5h limit:</span>
+                      <span style="color:#10B981; font-weight:500;">\${h5Pct}% <span style="color:#6B7280;">(\${h5Reset})</span></span>
+                    </div>
+                  \` : ''}
                 </div>
-              \` : ''}
-            </div>
-          \`;
+              \`;
+            }
+            qDetails.innerHTML = cardsHtml;
+          } else {
+            qDetails.style.display = 'none';
+            qDetails.innerHTML = '';
+          }
         }
-        qSection.innerHTML = cardsHtml;
       }
     }
 
