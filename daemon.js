@@ -2,8 +2,8 @@
 /**
  * Antigravity Native DOM Agent Panel Daemon
  * Pinned directly inside Antigravity's chat UI above the input box.
- * Displays real-time model quota telemetry from Antigravity's internal React Fiber,
- * live subagents, tokens, cost, and execution duration.
+ * Displays real-time model quota telemetry from Antigravity's internal React Fiber & agentService,
+ * including all model families (Argon, Flash, Sonnet, GPT-OSS, Opus), weekly limits & reset timers.
  *
  * Runs automatically as an OS background service with zero manual commands required.
  */
@@ -530,7 +530,7 @@ function analyzeConversation(forcedId, uiModelOverride) {
 // ============================================================================
 // Native DOM Injection Script
 // Directly mounts into Antigravity chat above #antigravity.agentSidePanelInputBox.
-// Extracts REAL quota information from Antigravity's live React Fiber state.
+// Extracts REAL quota information from Antigravity's live React Fiber & agentService.
 // ============================================================================
 function buildInjectorScript() {
   return `(() => {
@@ -571,7 +571,8 @@ function buildInjectorScript() {
         width: 100%;
         min-width: 0;
       }
-      #ag-native-agent-panel.ag-collapsed .ag-ap-body {
+      #ag-native-agent-panel.ag-collapsed .ag-ap-body,
+      #ag-native-agent-panel.ag-collapsed #ag-ap-quota-section {
         display: none !important;
       }
       .ag-ap-title {
@@ -593,7 +594,7 @@ function buildInjectorScript() {
       .ag-ap-quota-wrap {
         display: flex;
         align-items: center;
-        gap: 6px;
+        gap: 5px;
         font-size: 11.5px;
         white-space: nowrap;
         font-variant-numeric: tabular-nums;
@@ -722,6 +723,22 @@ function buildInjectorScript() {
         border-left: 2px solid #28282C;
         margin-top: 2px;
       }
+      .ag-ap-quota-section {
+        border-top: 1px solid #26262a;
+        margin-top: 5px;
+        padding-top: 6px;
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 7px;
+        font-size: 11px;
+      }
+      .ag-ap-qcard {
+        border-radius: 6px;
+        padding: 6px 9px;
+        display: flex;
+        flex-direction: column;
+        gap: 3.5px;
+      }
       @keyframes agSpin {
         0% { transform: rotate(0deg); }
         100% { transform: rotate(360deg); }
@@ -744,6 +761,9 @@ function buildInjectorScript() {
       window.__agDoneOpen = false;
     }
 
+    let cachedQuotaSummary = null;
+    let lastQuotaSummaryFetchMs = 0;
+
     function fmtTokens(n) {
       if (!n || n <= 0) return '0';
       if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M';
@@ -762,6 +782,20 @@ function buildInjectorScript() {
     function fmtCost(c) {
       const val = Number(c || 0);
       return '≈$' + val.toFixed(2);
+    }
+
+    function fmtReset(seconds) {
+      if (!seconds) return '';
+      const secNum = Number(seconds);
+      const diffMs = secNum * 1000 - Date.now();
+      if (diffMs <= 0) return 'resets soon';
+      const totalHours = Math.floor(diffMs / 3600000);
+      const days = Math.floor(totalHours / 24);
+      const hours = totalHours % 24;
+      const minutes = Math.floor((diffMs % 3600000) / 60000);
+      if (days > 0) return days + 'd ' + (hours > 0 ? hours + 'h' : '');
+      if (hours > 0) return hours + 'h ' + minutes + 'm';
+      return minutes + 'm';
     }
 
     function renderLineBar(pct, color) {
@@ -811,6 +845,43 @@ function buildInjectorScript() {
       </svg>
     \`;
 
+    async function fetchQuotaSummary() {
+      const now = Date.now();
+      if (cachedQuotaSummary && (now - lastQuotaSummaryFetchMs) < 12000) {
+        return cachedQuotaSummary;
+      }
+      try {
+        const box = document.getElementById('antigravity.agentSidePanelInputBox');
+        if (!box) return cachedQuotaSummary;
+        const fiberKey = Object.keys(box).find(k => k.startsWith('__reactFiber'));
+        if (!fiberKey) return cachedQuotaSummary;
+        let curr = box[fiberKey];
+        let top = curr;
+        while (top.return) top = top.return;
+
+        let agentService = null;
+        function findService(f) {
+          if (!f || agentService) return;
+          if (f.memoizedProps && f.memoizedProps.agentService) {
+            agentService = f.memoizedProps.agentService;
+            return;
+          }
+          if (f.child) findService(f.child);
+          if (f.sibling) findService(f.sibling);
+        }
+        findService(top);
+
+        if (agentService && typeof agentService.retrieveUserQuotaSummary === 'function') {
+          const raw = await agentService.retrieveUserQuotaSummary({});
+          if (raw && raw.response && Array.isArray(raw.response.groups)) {
+            cachedQuotaSummary = raw.response.groups;
+            lastQuotaSummaryFetchMs = now;
+          }
+        }
+      } catch {}
+      return cachedQuotaSummary;
+    }
+
     // Extract true real-time model quotas from React Fiber
     function extractLiveQuotas() {
       try {
@@ -849,7 +920,9 @@ function buildInjectorScript() {
 
         const argon = findModelQuota(/argon/i);
         const flash = findModelQuota(/flash/i);
-        const claude = findModelQuota(/claude/i);
+        const sonnet = findModelQuota(/sonnet/i);
+        const gpt = findModelQuota(/gpt/i);
+        const opus = findModelQuota(/opus/i);
 
         let activePct = null;
         let activeLabel = null;
@@ -865,7 +938,9 @@ function buildInjectorScript() {
           activePct,
           argon,
           flash,
-          claude,
+          sonnet,
+          gpt,
+          opus,
         };
       } catch {
         return null;
@@ -893,6 +968,7 @@ function buildInjectorScript() {
             <button type="button" class="ag-ap-pill-btn" id="ag-ap-toggle-btn">Hide</button>
           </div>
           <div class="ag-ap-body" id="ag-ap-body"></div>
+          <div class="ag-ap-quota-section" id="ag-ap-quota-section"></div>
         \`;
         inputBox.parentElement.insertBefore(panel, inputBox);
 
@@ -965,7 +1041,7 @@ function buildInjectorScript() {
       \`;
     }
 
-    function renderPanel(data) {
+    async function renderPanel(data) {
       window.__agLastData = data;
       const panel = ensurePanelElement();
       if (!panel) return;
@@ -973,6 +1049,7 @@ function buildInjectorScript() {
       panel.classList.toggle('ag-collapsed', !!window.__agPanelCollapsed);
 
       const liveQuotas = extractLiveQuotas();
+      const groups = await fetchQuotaSummary();
       const runningSubs = Array.isArray(data.subagents) ? data.subagents : [];
       const finishedSubs = Array.isArray(data.finishedSubagents) ? data.finishedSubagents : [];
 
@@ -988,7 +1065,7 @@ function buildInjectorScript() {
         summaryEl.textContent = \`\${fmtCost(data.cost)} · \${fmtTokens(data.totalTokens)} · \${fmtTime(data.elapsedSec)}\`;
       }
 
-      // Render True Real-Time Antigravity Quotas in Header
+      // 1. Render All Models in Header Chips (Argon, Flash, Sonnet, GPT-OSS, Opus)
       const quotaWrap = panel.querySelector('#ag-ap-quota-wrap');
       if (quotaWrap) {
         let chipsHtml = '';
@@ -1007,58 +1084,116 @@ function buildInjectorScript() {
             const border = liveQuotas.flash.pct < 25 ? 'rgba(245,158,11,0.3)' : 'rgba(16,185,129,0.3)';
             chipsHtml += \`<span class="ag-ap-quota-chip" style="color:\${fg}; background:\${bg}; border: 1px solid \${border};">Flash: \${liveQuotas.flash.pct}%</span>\`;
           }
-          if (liveQuotas.claude) {
-            const fg = liveQuotas.claude.pct < 25 ? '#F59E0B' : '#10B981';
-            const bg = liveQuotas.claude.pct < 25 ? 'rgba(245,158,11,0.12)' : 'rgba(16,185,129,0.12)';
-            const border = liveQuotas.claude.pct < 25 ? 'rgba(245,158,11,0.3)' : 'rgba(16,185,129,0.3)';
-            chipsHtml += \`<span class="ag-ap-quota-chip" style="color:\${fg}; background:\${bg}; border: 1px solid \${border};">Claude: \${liveQuotas.claude.pct}%</span>\`;
+          if (liveQuotas.sonnet) {
+            const fg = liveQuotas.sonnet.pct < 25 ? '#F59E0B' : '#10B981';
+            const bg = liveQuotas.sonnet.pct < 25 ? 'rgba(245,158,11,0.12)' : 'rgba(16,185,129,0.12)';
+            const border = liveQuotas.sonnet.pct < 25 ? 'rgba(245,158,11,0.3)' : 'rgba(16,185,129,0.3)';
+            chipsHtml += \`<span class="ag-ap-quota-chip" style="color:\${fg}; background:\${bg}; border: 1px solid \${border};">Sonnet: \${liveQuotas.sonnet.pct}%</span>\`;
+          }
+          if (liveQuotas.gpt) {
+            const fg = liveQuotas.gpt.pct < 25 ? '#F59E0B' : '#10B981';
+            const bg = liveQuotas.gpt.pct < 25 ? 'rgba(245,158,11,0.12)' : 'rgba(16,185,129,0.12)';
+            const border = liveQuotas.gpt.pct < 25 ? 'rgba(245,158,11,0.3)' : 'rgba(16,185,129,0.3)';
+            chipsHtml += \`<span class="ag-ap-quota-chip" style="color:\${fg}; background:\${bg}; border: 1px solid \${border};">GPT: \${liveQuotas.gpt.pct}%</span>\`;
           }
         }
         quotaWrap.innerHTML = chipsHtml;
       }
 
+      // 2. Render Main Agent & Subagents
       const bodyEl = panel.querySelector('#ag-ap-body');
-      if (!bodyEl) return;
+      if (bodyEl) {
+        const activeQuotaPct = liveQuotas ? liveQuotas.activePct : null;
+        let html = renderAgentRow({
+          description: 'Main agent',
+          status: data.status,
+          effort: data.effort,
+          effortColor: data.effortColor,
+          model: (liveQuotas && liveQuotas.activeLabel) ? liveQuotas.activeLabel : data.model,
+          ctx: data.ctxTokens,
+          tokens: data.mainTokens,
+          elapsedSec: data.elapsedSec,
+          cost: data.mainCost,
+        }, true, activeQuotaPct);
 
-      const activeQuotaPct = liveQuotas ? liveQuotas.activePct : null;
-
-      // 1. Main Agent Row with true quota badge
-      let html = renderAgentRow({
-        description: 'Main agent',
-        status: data.status,
-        effort: data.effort,
-        effortColor: data.effortColor,
-        model: (liveQuotas && liveQuotas.activeLabel) ? liveQuotas.activeLabel : data.model,
-        ctx: data.ctxTokens,
-        tokens: data.mainTokens,
-        elapsedSec: data.elapsedSec,
-        cost: data.mainCost,
-      }, true, activeQuotaPct);
-
-      // 2. Currently Running Subagents
-      for (const sa of runningSubs) {
-        html += renderAgentRow(sa, false, null);
-      }
-
-      // 3. Completed Subagents / Runs
-      if (finishedSubs.length > 0) {
-        const doneOpen = !!window.__agDoneOpen;
-        html += \`
-          <div class="ag-ap-done-bar">
-            <span class="ag-ap-done-text">\${finishedSubs.length} done · \${fmtCost(data.doneCost)}</span>
-            <button type="button" class="ag-ap-pill-btn" id="ag-ap-done-toggle-btn">\${doneOpen ? 'Hide' : 'Show'}</button>
-          </div>
-        \`;
-        if (doneOpen) {
-          html += '<div class="ag-ap-done-list">';
-          for (const doneItem of finishedSubs) {
-            html += renderAgentRow(doneItem, false, null);
-          }
-          html += '</div>';
+        for (const sa of runningSubs) {
+          html += renderAgentRow(sa, false, null);
         }
+
+        if (finishedSubs.length > 0) {
+          const doneOpen = !!window.__agDoneOpen;
+          html += \`
+            <div class="ag-ap-done-bar">
+              <span class="ag-ap-done-text">\${finishedSubs.length} done · \${fmtCost(data.doneCost)}</span>
+              <button type="button" class="ag-ap-pill-btn" id="ag-ap-done-toggle-btn">\${doneOpen ? 'Hide' : 'Show'}</button>
+            </div>
+          \`;
+          if (doneOpen) {
+            html += '<div class="ag-ap-done-list">';
+            for (const doneItem of finishedSubs) {
+              html += renderAgentRow(doneItem, false, null);
+            }
+            html += '</div>';
+          }
+        }
+        bodyEl.innerHTML = html;
       }
 
-      bodyEl.innerHTML = html;
+      // 3. Render Dedicated Lower Section: 3 Real Quota Buckets & Weekly Reset Timers
+      const qSection = panel.querySelector('#ag-ap-quota-section');
+      if (qSection && Array.isArray(groups) && groups.length > 0) {
+        let cardsHtml = '';
+        for (const g of groups) {
+          const isArgon = /argon/i.test(g.displayName);
+          const isGemini = /gemini models/i.test(g.displayName);
+          const isClaude = /claude/i.test(g.displayName);
+
+          const weeklyBucket = (g.buckets || []).find(b => b.window === 'weekly');
+          const h5Bucket = (g.buckets || []).find(b => b.window === '5h');
+
+          const weeklyPct = weeklyBucket ? Math.round(weeklyBucket.remaining.value * 100) : 0;
+          const weeklyReset = weeklyBucket ? fmtReset(weeklyBucket.resetTime?.seconds) : '';
+
+          const h5Pct = h5Bucket ? Math.round(h5Bucket.remaining.value * 100) : null;
+          const h5Reset = h5Bucket ? fmtReset(h5Bucket.resetTime?.seconds) : '';
+
+          const statusColor = weeklyPct <= 0 ? '#EF4444' : weeklyPct < 25 ? '#F59E0B' : '#10B981';
+          const statusBg = weeklyPct <= 0 ? 'rgba(239,68,68,0.1)' : 'rgba(16,185,129,0.07)';
+          const borderCol = weeklyPct <= 0 ? 'rgba(239,68,68,0.28)' : 'rgba(16,185,129,0.22)';
+
+          let title = g.displayName;
+          let subtitle = 'Flash 3.8 & Flash-Lite';
+          if (isClaude) { title = 'Claude & GPT Models'; subtitle = 'Sonnet 5.5, Opus 5.5, GPT-OSS'; }
+          if (isGemini) { title = 'Gemini Models'; subtitle = 'Flash 3.8 & Flash-Lite'; }
+          if (isArgon) { title = 'Gemini 4 Argon'; subtitle = 'Pro / Thinking tier'; }
+
+          cardsHtml += \`
+            <div class="ag-ap-qcard" style="background:\${statusBg}; border:1px solid \${borderCol};">
+              <div style="display:flex; justify-content:space-between; align-items:center;">
+                <span style="font-weight:600; color:#F3F4F6;">\${title}</span>
+                <span style="color:\${statusColor}; font-weight:700; font-size:11.5px;">\${weeklyPct}% left</span>
+              </div>
+              <div style="font-size:10px; color:#9CA3AF; margin-top:-2px;">\${subtitle}</div>
+              
+              <div style="width:100%; height:3px; background:#2A2A2E; border-radius:2px; overflow:hidden; margin:2px 0;">
+                <div style="width:\${weeklyPct}%; height:100%; background:\${statusColor}; border-radius:2px;"></div>
+              </div>
+              
+              <div style="display:flex; justify-content:space-between; color:#9CA3AF; font-size:10.5px;">
+                <span>Weekly reset:</span>
+                <span style="color:\${weeklyPct <= 0 ? '#EF4444' : '#E5E7EB'}; font-weight:500;">\${weeklyReset || 'N/A'}</span>
+              </div>
+              \${h5Pct !== null ? \`
+                <div style="display:flex; justify-content:space-between; color:#9CA3AF; font-size:10.5px;">
+                  <span>5h limit:</span>
+                  <span style="color:#10B981; font-weight:500;">\${h5Pct}% <span style="color:#6B7280;">(\${h5Reset})</span></span>
+                </div>
+              \` : ''}
+            </div>
+          \`;
+        }
+        qSection.innerHTML = cardsHtml;
+      }
     }
 
     window.__agPollStateAndUpdate = function(serverPayload) {
