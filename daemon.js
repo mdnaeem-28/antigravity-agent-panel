@@ -1,8 +1,25 @@
 #!/usr/bin/env node
+/**
+ * Antigravity Native DOM Agent Panel Daemon
+ * Pinned directly inside Antigravity's chat UI above the input box.
+ * Displays real-time model quota telemetry from Antigravity's internal React Fiber,
+ * live subagents, tokens, cost, and execution duration.
+ *
+ * Runs automatically as an OS background service with zero manual commands required.
+ */
+
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+
+// Resilience: never crash on transient errors
+process.on('uncaughtException', (err) => {
+  // Silent or log without crashing
+});
+process.on('unhandledRejection', () => {
+  // Silent or log without crashing
+});
 
 const PORT = parseInt(process.env.AG_PANEL_PORT || '4747', 10);
 const HOME = os.homedir();
@@ -24,10 +41,6 @@ function resolveDevToolsPortFiles() {
 
 const PORT_FILES = resolveDevToolsPortFiles();
 const WINDOW_LIMIT = 1_000_000;
-const IDLE_AUTO_HIDE_MS = 20 * 60 * 1000;
-const WEEK_MS = 7 * 24 * 3600 * 1000;
-// Weekly reference budget in USD (configurable via AG_WEEKLY_BUDGET_USD, default $150/week pro tier equivalent)
-const WEEKLY_BUDGET_USD = parseFloat(process.env.AG_WEEKLY_BUDGET_USD || '150');
 
 const PRICES = [
   [/argon|pro|opus/i, 2.5, 10.0],
@@ -56,7 +69,7 @@ function getPrice(model, inputTokens, outputTokens, cacheReadTokens) {
 }
 
 function parseModelAndEffort(rawModelStr) {
-  if (!rawModelStr) return { model: 'Gemini 4 Argon', effort: 'medium', effortColor: '#4A9FD9', effortBg: 'rgba(74,159,217,0.15)' };
+  if (!rawModelStr) return { model: 'Gemini 3.8 Flash', effort: 'medium', effortColor: '#4A9FD9', effortBg: 'rgba(74,159,217,0.15)' };
   let effort = 'medium';
   let effortColor = '#4A9FD9';
   let effortBg = 'rgba(74,159,217,0.15)';
@@ -87,7 +100,7 @@ function parseModelAndEffort(rawModelStr) {
     .replace(/\b(Low|Medium|High|Max|Heavy|Light|Careful)\b/gi, '')
     .replace(/\s+/g, ' ')
     .trim();
-  return { model: cleanModel || 'Gemini 4 Argon', effort, effortColor, effortBg };
+  return { model: cleanModel || 'Gemini 3.8 Flash', effort, effortColor, effortBg };
 }
 
 function resolveSubagentModelName(rawSubModel, parentModel) {
@@ -108,86 +121,6 @@ function roleOf(type, description) {
   if (/scout|skill|catalog/.test(s)) return 'scout';
   if (/explore|research|search/.test(s)) return 'explore';
   return 'explore';
-}
-
-// ============================================================================
-// Weekly Usage Computation (cached every 15 seconds)
-// Matches claude-agent-panel: "Usage █░░░░░░░░░ 11% / 15% Week, Under Pace"
-// ============================================================================
-let cachedWeek = null;
-let lastWeekCalcMs = 0;
-
-function getWeeklyUsage() {
-  const now = Date.now();
-  if (cachedWeek && (now - lastWeekCalcMs) < 15000) {
-    return cachedWeek;
-  }
-  lastWeekCalcMs = now;
-
-  // Calculate current 7-day window (anchored to Monday 00:00 local time)
-  const dNow = new Date(now);
-  const dayOfWeek = (dNow.getDay() + 6) % 7; // Monday = 0 .. Sunday = 6
-  const mondayStart = new Date(dNow.getFullYear(), dNow.getMonth(), dNow.getDate() - dayOfWeek, 0, 0, 0, 0).getTime();
-  const elapsedMs = Math.max(1, now - mondayStart);
-  const elapsedFraction = Math.min(1, Math.max(0.01, elapsedMs / WEEK_MS));
-  const elapsedPct = Math.max(1, Math.min(100, Math.round(elapsedFraction * 100)));
-
-  let weekCostUsd = 0;
-  const cutoffMs = now - WEEK_MS;
-
-  if (fs.existsSync(BRAIN_DIR)) {
-    try {
-      const dirs = fs.readdirSync(BRAIN_DIR, { withFileTypes: true });
-      for (const d of dirs) {
-        if (!d.isDirectory()) continue;
-        const tPath = path.join(BRAIN_DIR, d.name, '.system_generated', 'logs', 'transcript.jsonl');
-        if (!fs.existsSync(tPath)) continue;
-        const st = fs.statSync(tPath);
-        if (st.mtimeMs < cutoffMs) continue;
-        const lines = fs.readFileSync(tPath, 'utf8').trim().split('\n');
-        let curModel = 'Gemini 4 Argon';
-        for (const line of lines) {
-          if (!line) continue;
-          try {
-            const obj = JSON.parse(line);
-            if (obj.type === 'USER_INPUT' && typeof obj.content === 'string') {
-              const m = obj.content.match(/Model Selection` from [^\n]+? to ([^\n.]+?)\./);
-              if (m && m[1]) curModel = m[1].trim();
-            } else if (obj.type === 'PLANNER_RESPONSE') {
-              const tMs = obj.created_at ? new Date(obj.created_at).getTime() : st.mtimeMs;
-              if (tMs >= mondayStart) {
-                weekCostUsd += getPrice(curModel, obj.input_tokens || 0, obj.output_tokens || 0, obj.cache_read_tokens || 0);
-              }
-            }
-          } catch {}
-        }
-      }
-    } catch {}
-  }
-
-  const usedPct = Math.min(100, Math.max(1, Math.round((weekCostUsd / WEEKLY_BUDGET_USD) * 100)));
-  const pace = usedPct / elapsedPct;
-  let verdict = 'On Pace';
-  let color = '#9AA0A6';
-  if (pace > 1.15) {
-    verdict = 'Over Pace';
-    color = '#C0392B';
-  } else if (pace > 1.0) {
-    verdict = 'Ahead Of Pace';
-    color = '#D99A3B';
-  } else if (pace < 0.85) {
-    verdict = 'Under Pace';
-    color = '#3BA55C';
-  }
-
-  cachedWeek = {
-    used: usedPct,
-    elapsed: elapsedPct,
-    verdict,
-    color,
-    weekCostUsd,
-  };
-  return cachedWeek;
 }
 
 function inspectFirstLine(tPath) {
@@ -325,78 +258,96 @@ function parseSubagentTranscript(subId, modelName) {
   }
 }
 
-function analyzeConversation(forcedId, uiModelLabel) {
+function analyzeConversation(forcedId, uiModelOverride) {
   const target = findActiveParentConversation(forcedId);
-  if (!target) return null;
+  if (!target) {
+    const pm = parseModelAndEffort(uiModelOverride || 'Gemini 3.8 Flash');
+    return {
+      conversationId: forcedId || null,
+      hasActivity: false,
+      status: 'done',
+      model: pm.model,
+      effort: pm.effort,
+      effortColor: pm.effortColor,
+      effortBg: pm.effortBg,
+      activeTool: 'Ready',
+      ctxTokens: 0,
+      ctxPct: 0,
+      windowLimit: WINDOW_LIMIT,
+      mainTokens: 0,
+      totalTokens: 0,
+      mainCost: 0,
+      cost: 0,
+      elapsedSec: 0,
+      stepsCount: 0,
+      subagents: [],
+      finishedSubagents: [],
+      doneCount: 0,
+      doneCost: 0,
+      updatedAt: Date.now(),
+    };
+  }
 
-  let content = '';
+  let lines = [];
   try {
-    content = fs.readFileSync(target.transcriptPath, 'utf8');
+    lines = fs.readFileSync(target.transcriptPath, 'utf8').trim().split('\n').filter(Boolean);
   } catch {
     return null;
   }
 
-  const lines = content.trim().split('\n').filter(Boolean);
-  let rawModel = uiModelLabel || 'Gemini 4 Argon (Medium)';
+  let rawModel = uiModelOverride || 'Gemini 3.8 Flash';
   let totalInput = 0;
   let totalOutput = 0;
   let totalCacheRead = 0;
-  let totalCost = 0;
   let latestCtx = 0;
+  let totalCost = 0;
   let stepsCount = 0;
-  let lastStep = null;
-  let prevStepMs = null;
-  let lastStepMs = null;
-  let activeElapsedSec = 0;
-  const subagentsList = [];
+  let subagentsList = [];
   let pendingSubagentIdx = 0;
+  let lastStep = null;
+  let prevStepTimeMs = null;
+  let activeElapsedSec = 0;
+  let lastStepMs = target.mtimeMs;
 
-  // Also track completed task turns so even if no subagent was spawned in a chat,
-  // the user can click "Show" on "N done · ≈$X.XX [Show]" to inspect each task run!
   const turnRuns = [];
   let currentTurn = null;
 
-  for (let i = 0; i < lines.length; i++) {
+  for (const line of lines) {
     let d;
     try {
-      d = JSON.parse(lines[i]);
+      d = JSON.parse(line);
     } catch {
       continue;
     }
     lastStep = d;
     const stepTime = d.created_at ? new Date(d.created_at).getTime() : null;
     if (stepTime) {
-      if (prevStepMs) {
-        const deltaSec = (stepTime - prevStepMs) / 1000;
+      if (prevStepTimeMs) {
+        const deltaSec = (stepTime - prevStepTimeMs) / 1000;
         if (deltaSec > 0 && deltaSec <= 120) {
           activeElapsedSec += deltaSec;
           if (currentTurn) currentTurn.elapsedSec += deltaSec;
         }
       }
-      prevStepMs = stepTime;
+      prevStepTimeMs = stepTime;
       lastStepMs = stepTime;
     }
 
-    if (d.type === 'USER_INPUT' && typeof d.content === 'string') {
-      if (!uiModelLabel) {
-        const mMatch = d.content.match(/Model Selection` from [^\n]+? to ([^\n.]+?)\./);
-        if (mMatch && mMatch[1]) {
-          rawModel = mMatch[1].trim();
-        }
-      }
-      // Extract clean prompt title for turn summary
-      const reqMatch = d.content.match(/<USER_REQUEST>([\s\S]*?)<\/USER_REQUEST>/);
-      const rawPrompt = (reqMatch ? reqMatch[1] : d.content).replace(/\s+/g, ' ').trim();
-      const shortPrompt = rawPrompt.slice(0, 42) + (rawPrompt.length > 42 ? '…' : '');
+    if (d.type === 'USER_INPUT') {
       if (currentTurn && currentTurn.steps > 0) {
         currentTurn.status = 'done';
         turnRuns.push(currentTurn);
+      }
+      let promptSnippet = 'User request';
+      if (typeof d.content === 'string') {
+        const clean = d.content.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+        if (clean) promptSnippet = clean.slice(0, 32);
       }
       const pm = parseModelAndEffort(rawModel);
       currentTurn = {
         key: `turn-${turnRuns.length + 1}`,
         index: turnRuns.length + 1,
-        description: shortPrompt || `Task #${turnRuns.length + 1}`,
+        description: promptSnippet,
         role: 'developer',
         effort: pm.effort,
         effortColor: pm.effortColor,
@@ -543,23 +494,18 @@ function analyzeConversation(forcedId, uiModelLabel) {
   }
 
   const runningSubagents = subagentsList.filter(sa => sa.status === 'running');
-  // Completed subagents (or completed task turns if no subagents were invoked in this chat)
   const finishedSubagents = subagentsList.length > 0
     ? subagentsList.filter(sa => sa.status !== 'running').reverse()
     : turnRuns.map(t => ({ ...t, elapsedSec: Math.max(1, Math.round(t.elapsedSec)) })).reverse();
 
   const doneCost = finishedSubagents.reduce((sum, item) => sum + (item.cost || 0), 0);
-
   const parsedModel = parseModelAndEffort(rawModel);
   const ctxPct = Math.min(100, Math.round((latestCtx / WINDOW_LIMIT) * 100));
   const elapsedSec = Math.max(1, Math.round(activeElapsedSec));
-  const week = getWeeklyUsage();
 
   return {
     conversationId: target.conversationId,
     hasActivity: lines.length > 0,
-    idleMs: fileAgeMs,
-    shouldAutoHide: !isRunning && fileAgeMs > IDLE_AUTO_HIDE_MS,
     status: isRunning ? 'running' : 'done',
     model: parsedModel.model,
     effort: parsedModel.effort,
@@ -579,13 +525,14 @@ function analyzeConversation(forcedId, uiModelLabel) {
     finishedSubagents,
     doneCount: finishedSubagents.length,
     doneCost,
-    week,
     updatedAt: now,
   };
 }
 
 // ============================================================================
-// Native DOM Injection Script (Exact claude-agent-panel layout + Antigravity branding)
+// Native DOM Injection Script
+// Directly mounts into Antigravity chat above #antigravity.agentSidePanelInputBox.
+// Extracts REAL quota information from Antigravity's live React Fiber state.
 // ============================================================================
 function buildInjectorScript() {
   return `(() => {
@@ -616,9 +563,6 @@ function buildInjectorScript() {
         flex-direction: column;
         gap: 6px;
       }
-      #ag-native-agent-panel.ag-hidden {
-        display: none !important;
-      }
       #ag-native-agent-panel.ag-menu-open {
         pointer-events: none;
       }
@@ -648,25 +592,22 @@ function buildInjectorScript() {
         flex: 1 1 auto;
         min-width: 8px;
       }
-      .ag-ap-week-wrap {
+      .ag-ap-quota-wrap {
         display: flex;
         align-items: center;
         gap: 6px;
-        font-size: 12px;
-        color: #8E8E93;
+        font-size: 11.5px;
         white-space: nowrap;
         font-variant-numeric: tabular-nums;
       }
-      .ag-ap-week-bar {
-        font-family: "Consolas", "SF Mono", "Courier New", monospace;
-        font-size: 12px;
-        letter-spacing: 0.5px;
-        line-height: 1;
+      .ag-ap-quota-chip {
         display: inline-flex;
         align-items: center;
-      }
-      .ag-ap-week-empty {
-        color: #6E6E73;
+        gap: 4px;
+        padding: 1.5px 6px;
+        border-radius: 4px;
+        font-weight: 500;
+        line-height: 1.25;
       }
       .ag-ap-pill-btn {
         background: #2C2C30;
@@ -723,7 +664,7 @@ function buildInjectorScript() {
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
-        max-width: 240px;
+        max-width: 200px;
       }
       .ag-ap-effort {
         font-size: 12px;
@@ -737,6 +678,14 @@ function buildInjectorScript() {
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
+      }
+      .ag-ap-live-badge {
+        font-size: 11px;
+        font-weight: 600;
+        padding: 1px 5px;
+        border-radius: 4px;
+        white-space: nowrap;
+        line-height: 1.2;
       }
       .ag-ap-line-bar {
         font-family: "Consolas", "SF Mono", monospace;
@@ -795,9 +744,6 @@ function buildInjectorScript() {
     }
     if (typeof window.__agDoneOpen === 'undefined') {
       window.__agDoneOpen = false;
-    }
-    if (typeof window.__agUserTypedMs === 'undefined') {
-      window.__agUserTypedMs = 0;
     }
 
     function fmtTokens(n) {
@@ -867,25 +813,85 @@ function buildInjectorScript() {
       </svg>
     \`;
 
+    // Extract true real-time model quotas from React Fiber
+    function extractLiveQuotas() {
+      try {
+        const box = document.getElementById('antigravity.agentSidePanelInputBox');
+        if (!box) return null;
+        const fiberKey = Object.keys(box).find(k => k.startsWith('__reactFiber'));
+        if (!fiberKey) return null;
+        let curr = box[fiberKey];
+        let userStatus = null;
+        let currentModelConfig = null;
+
+        while (curr) {
+          if (curr.memoizedProps) {
+            if (!currentModelConfig && curr.memoizedProps.currentModelConfig) {
+              currentModelConfig = curr.memoizedProps.currentModelConfig;
+            }
+            if (!userStatus && curr.memoizedProps.value && curr.memoizedProps.value.userStatus) {
+              userStatus = curr.memoizedProps.value.userStatus;
+            }
+          }
+          curr = curr.return;
+        }
+
+        const rawModels = (userStatus && userStatus.cascadeModelConfigData && userStatus.cascadeModelConfigData.clientModelConfigs) || [];
+
+        function findModelQuota(regex) {
+          const m = rawModels.find(x => regex.test(x.label || ''));
+          if (!m || !m.quotaInfo) return null;
+          const frac = typeof m.quotaInfo.remainingFraction === 'number' ? m.quotaInfo.remainingFraction : null;
+          return {
+            label: m.label,
+            pct: frac !== null ? Math.round(frac * 100) : null,
+            resetSeconds: m.quotaInfo.resetTime ? Number(m.quotaInfo.resetTime.seconds) : null,
+          };
+        }
+
+        const argon = findModelQuota(/argon/i);
+        const flash = findModelQuota(/flash/i);
+        const claude = findModelQuota(/claude/i);
+
+        let activePct = null;
+        let activeLabel = null;
+        if (currentModelConfig) {
+          activeLabel = currentModelConfig.label;
+          if (currentModelConfig.quotaInfo && typeof currentModelConfig.quotaInfo.remainingFraction === 'number') {
+            activePct = Math.round(currentModelConfig.quotaInfo.remainingFraction * 100);
+          }
+        }
+
+        return {
+          activeLabel,
+          activePct,
+          argon,
+          flash,
+          claude,
+        };
+      } catch {
+        return null;
+      }
+    }
+
     function ensurePanelElement() {
       const inputBox = document.getElementById('antigravity.agentSidePanelInputBox');
       if (!inputBox || !inputBox.parentElement) return null;
 
       let panel = document.getElementById('ag-native-agent-panel');
-      if (panel && !panel.querySelector('#ag-ap-week-wrap')) {
+      if (panel && !panel.querySelector('#ag-ap-quota-wrap')) {
         panel.remove();
         panel = null;
       }
       if (!panel) {
         panel = document.createElement('div');
         panel.id = 'ag-native-agent-panel';
-        panel.className = 'ag-hidden';
         panel.innerHTML = \`
           <div class="ag-ap-header">
             <span class="ag-ap-title" id="ag-ap-title">Agents</span>
             <span class="ag-ap-summary" id="ag-ap-header-summary"></span>
             <div class="ag-ap-spacer"></div>
-            <div class="ag-ap-week-wrap" id="ag-ap-week-wrap"></div>
+            <div class="ag-ap-quota-wrap" id="ag-ap-quota-wrap"></div>
             <button type="button" class="ag-ap-pill-btn" id="ag-ap-toggle-btn">Hide</button>
           </div>
           <div class="ag-ap-body" id="ag-ap-body"></div>
@@ -899,11 +905,10 @@ function buildInjectorScript() {
             e.stopPropagation();
             window.__agPanelCollapsed = !window.__agPanelCollapsed;
             panel.classList.toggle('ag-collapsed', window.__agPanelCollapsed);
-            toggleBtn.textContent = window.__agPanelCollapsed ? 'Show agents' : 'Hide';
+            toggleBtn.textContent = window.__agPanelCollapsed ? 'Show' : 'Hide';
           });
         }
 
-        // Delegate click for the bottom "Show" / "Hide" completed subagents button
         panel.addEventListener('click', (e) => {
           const btn = e.target.closest('#ag-ap-done-toggle-btn');
           if (btn) {
@@ -913,11 +918,6 @@ function buildInjectorScript() {
             if (window.__agLastData) renderPanel(window.__agLastData);
           }
         });
-
-        inputBox.addEventListener('keydown', () => {
-          window.__agUserTypedMs = Date.now();
-          if (window.__agLastData) renderPanel(window.__agLastData);
-        }, true);
       } else if (panel.nextElementSibling !== inputBox) {
         inputBox.parentElement.insertBefore(panel, inputBox);
       }
@@ -930,7 +930,7 @@ function buildInjectorScript() {
       return panel;
     }
 
-    function renderAgentRow(item, isMain) {
+    function renderAgentRow(item, isMain, activeQuotaPct) {
       const isRunning = item.status === 'running';
       const effColor = item.effortColor || '#4A9FD9';
       const pct = Math.min(100, Math.round(((item.ctx || 0) / 1000000) * 100));
@@ -940,13 +940,24 @@ function buildInjectorScript() {
           ? '<span class="ag-ap-mark" style="color:#9AA0A6">◦</span>'
           : '<span class="ag-ap-mark" style="color:#3BA55C">✓</span>';
 
+      let quotaBadgeHtml = '';
+      if (isMain && activeQuotaPct !== null && activeQuotaPct !== undefined) {
+        const isExhausted = activeQuotaPct <= 0;
+        const badgeColor = isExhausted ? '#EF4444' : activeQuotaPct < 25 ? '#F59E0B' : '#10B981';
+        const badgeBg = isExhausted ? 'rgba(239,68,68,0.14)' : activeQuotaPct < 25 ? 'rgba(245,158,11,0.14)' : 'rgba(16,185,129,0.14)';
+        const badgeBorder = isExhausted ? 'rgba(239,68,68,0.35)' : activeQuotaPct < 25 ? 'rgba(245,158,11,0.35)' : 'rgba(16,185,129,0.35)';
+        const text = isExhausted ? '0% left (Limit Exceeded)' : (activeQuotaPct + '% left');
+        quotaBadgeHtml = \`<span class="ag-ap-live-badge" style="color:\${badgeColor}; background:\${badgeBg}; border: 1px solid \${badgeBorder};">\${text}</span>\`;
+      }
+
       return \`
         <div class="ag-ap-row">
           <div class="ag-ap-icon-wrap">\${isMain ? ANTIGRAVITY_BRAND_SVG : GEMINI_SUB_SVG(isRunning)}</div>
           \${markHtml}
           <span class="ag-ap-agent-name">\${item.description || 'Main agent'}</span>
           <span class="ag-ap-effort" style="color:\${effColor}">\${item.effort || 'medium'}</span>
-          <span class="ag-ap-model">\${item.model || 'Gemini 4 Argon'}</span>
+          <span class="ag-ap-model">\${item.model || 'Gemini 3.8 Flash'}</span>
+          \${quotaBadgeHtml}
           <div class="ag-ap-spacer"></div>
           \${renderLineBar(pct, effColor)}
           <span class="ag-ap-metric">\${fmtTokens(item.ctx || item.tokens)}</span>
@@ -961,15 +972,9 @@ function buildInjectorScript() {
       const panel = ensurePanelElement();
       if (!panel) return;
 
-      const typedRecently = (Date.now() - (window.__agUserTypedMs || 0)) < 60000;
-      if (!data || (!data.hasActivity && !typedRecently) || (data.shouldAutoHide && !typedRecently)) {
-        panel.classList.add('ag-hidden');
-        return;
-      }
-
-      panel.classList.remove('ag-hidden');
       panel.classList.toggle('ag-collapsed', !!window.__agPanelCollapsed);
 
+      const liveQuotas = extractLiveQuotas();
       const runningSubs = Array.isArray(data.subagents) ? data.subagents : [];
       const finishedSubs = Array.isArray(data.finishedSubagents) ? data.finishedSubagents : [];
 
@@ -985,41 +990,59 @@ function buildInjectorScript() {
         summaryEl.textContent = \`\${fmtCost(data.cost)} · \${fmtTokens(data.totalTokens)} · \${fmtTime(data.elapsedSec)}\`;
       }
 
-      // Render Weekly Usage Bar in Header (matches claude-agent-panel: "Usage █░░░░░░░░░ 11% / 15% Week, Under Pace")
-      const weekWrap = panel.querySelector('#ag-ap-week-wrap');
-      if (weekWrap && data.week) {
-        const w = 10;
-        const fill = Math.min(w, Math.max(1, Math.round((data.week.used / 100) * w)));
-        const barHtml = \`<span class="ag-ap-week-bar"><span style="color:\${data.week.color}">\${'█'.repeat(fill)}</span><span class="ag-ap-week-empty">\${'░'.repeat(w - fill)}</span></span>\`;
-        weekWrap.innerHTML = \`
-          <span>Usage</span>
-          \${barHtml}
-          <span>\${data.week.used}% / \${data.week.elapsed}% Week, \${data.week.verdict}</span>
-        \`;
+      // Render True Real-Time Antigravity Quotas in Header
+      const quotaWrap = panel.querySelector('#ag-ap-quota-wrap');
+      if (quotaWrap) {
+        let chipsHtml = '';
+        if (liveQuotas) {
+          if (liveQuotas.argon) {
+            const isZero = liveQuotas.argon.pct <= 0;
+            const fg = isZero ? '#EF4444' : liveQuotas.argon.pct < 25 ? '#F59E0B' : '#10B981';
+            const bg = isZero ? 'rgba(239,68,68,0.12)' : 'rgba(16,185,129,0.12)';
+            const border = isZero ? 'rgba(239,68,68,0.3)' : 'rgba(16,185,129,0.3)';
+            const txt = isZero ? 'Argon: 0% left' : (\`Argon: \${liveQuotas.argon.pct}%\`);
+            chipsHtml += \`<span class="ag-ap-quota-chip" style="color:\${fg}; background:\${bg}; border: 1px solid \${border};">\${txt}</span>\`;
+          }
+          if (liveQuotas.flash) {
+            const fg = liveQuotas.flash.pct < 25 ? '#F59E0B' : '#10B981';
+            const bg = liveQuotas.flash.pct < 25 ? 'rgba(245,158,11,0.12)' : 'rgba(16,185,129,0.12)';
+            const border = liveQuotas.flash.pct < 25 ? 'rgba(245,158,11,0.3)' : 'rgba(16,185,129,0.3)';
+            chipsHtml += \`<span class="ag-ap-quota-chip" style="color:\${fg}; background:\${bg}; border: 1px solid \${border};">Flash: \${liveQuotas.flash.pct}%</span>\`;
+          }
+          if (liveQuotas.claude) {
+            const fg = liveQuotas.claude.pct < 25 ? '#F59E0B' : '#10B981';
+            const bg = liveQuotas.claude.pct < 25 ? 'rgba(245,158,11,0.12)' : 'rgba(16,185,129,0.12)';
+            const border = liveQuotas.claude.pct < 25 ? 'rgba(245,158,11,0.3)' : 'rgba(16,185,129,0.3)';
+            chipsHtml += \`<span class="ag-ap-quota-chip" style="color:\${fg}; background:\${bg}; border: 1px solid \${border};">Claude: \${liveQuotas.claude.pct}%</span>\`;
+          }
+        }
+        quotaWrap.innerHTML = chipsHtml;
       }
 
       const bodyEl = panel.querySelector('#ag-ap-body');
       if (!bodyEl) return;
 
-      // 1. Main Agent Row
+      const activeQuotaPct = liveQuotas ? liveQuotas.activePct : null;
+
+      // 1. Main Agent Row with true quota badge
       let html = renderAgentRow({
         description: 'Main agent',
         status: data.status,
         effort: data.effort,
         effortColor: data.effortColor,
-        model: data.model,
+        model: (liveQuotas && liveQuotas.activeLabel) ? liveQuotas.activeLabel : data.model,
         ctx: data.ctxTokens,
         tokens: data.mainTokens,
         elapsedSec: data.elapsedSec,
         cost: data.mainCost,
-      }, true);
+      }, true, activeQuotaPct);
 
-      // 2. Currently Running Subagent Rows
+      // 2. Currently Running Subagents
       for (const sa of runningSubs) {
-        html += renderAgentRow(sa, false);
+        html += renderAgentRow(sa, false, null);
       }
 
-      // 3. Bottom Completed Subagents / Runs Row ("8 done · ≈$4.82 [Show]")
+      // 3. Completed Subagents / Runs
       if (finishedSubs.length > 0) {
         const doneOpen = !!window.__agDoneOpen;
         html += \`
@@ -1031,7 +1054,7 @@ function buildInjectorScript() {
         if (doneOpen) {
           html += '<div class="ag-ap-done-list">';
           for (const doneItem of finishedSubs) {
-            html += renderAgentRow(doneItem, false);
+            html += renderAgentRow(doneItem, false, null);
           }
           html += '</div>';
         }
@@ -1043,7 +1066,7 @@ function buildInjectorScript() {
     window.__agPollStateAndUpdate = function(serverPayload) {
       if (serverPayload) {
         renderPanel(serverPayload);
-      } else if (window.__agLastData) {
+      } else {
         ensurePanelElement();
       }
       const m = (window.location.pathname || '').match(/\\/c\\/([0-9a-f-]{36})/i);
@@ -1063,7 +1086,7 @@ function buildInjectorScript() {
 }
 
 // ============================================================================
-// CDP WebSocket Manager
+// CDP WebSocket Connection Manager
 // ============================================================================
 const activeConnections = new Map();
 const INJECTOR_CODE = buildInjectorScript();
@@ -1156,8 +1179,8 @@ function connectToTarget(target) {
         const val = msg.result.result.value;
         if (val.startsWith('{')) {
           const parsed = JSON.parse(val);
-          if (parsed.cid !== undefined) conn.cid = parsed.cid || null;
-          if (parsed.uiModel !== undefined) conn.uiModel = parsed.uiModel || '';
+          if (parsed.cid !== undefined && parsed.cid) conn.cid = parsed.cid;
+          if (parsed.uiModel !== undefined && parsed.uiModel) conn.uiModel = parsed.uiModel;
         }
       }
     } catch {}
@@ -1174,11 +1197,8 @@ function connectToTarget(target) {
 
 function pushUpdateToConnection(conn) {
   if (!conn.ready || conn.ws.readyState !== 1) return;
-  const stats = conn.cid
-    ? analyzeConversation(conn.cid, conn.uiModel)
-    : { hasActivity: false, shouldAutoHide: true };
-
-  const payloadJson = JSON.stringify(stats || { hasActivity: false, shouldAutoHide: true });
+  const stats = analyzeConversation(conn.cid, conn.uiModel);
+  const payloadJson = JSON.stringify(stats || { status: 'idle', hasActivity: false });
   const expr = `(typeof window.__agPollStateAndUpdate === 'function' ? window.__agPollStateAndUpdate(${payloadJson}) : (${INJECTOR_CODE}, window.__agPollStateAndUpdate && window.__agPollStateAndUpdate(${payloadJson})))`;
 
   try {
@@ -1195,12 +1215,12 @@ setInterval(() => {
   for (const conn of activeConnections.values()) {
     pushUpdateToConnection(conn);
   }
-}, 900);
+}, 800);
 
 syncCdpTargets();
 
 // ============================================================================
-// HTTP Telemetry Server
+// Telemetry HTTP API
 // ============================================================================
 const server = http.createServer((req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
