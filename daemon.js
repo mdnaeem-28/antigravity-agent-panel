@@ -965,7 +965,7 @@ function buildInjectorScript() {
       if (!inputBox || !inputBox.parentElement) return null;
 
       let panel = document.getElementById('ag-native-agent-panel');
-      if (panel && !panel.querySelector('#ag-ap-quota-wrap')) {
+      if (panel && (!panel.querySelector('#ag-ap-quota-wrap') || !panel.querySelector('#ag-ap-quota-bar') || !panel.querySelector('#ag-ap-quota-details'))) {
         panel.remove();
         panel = null;
       }
@@ -982,41 +982,60 @@ function buildInjectorScript() {
           </div>
           <div class="ag-ap-body" id="ag-ap-body"></div>
           <div class="ag-ap-quota-bar" id="ag-ap-quota-bar"></div>
-          <div class="ag-ap-quota-details" id="ag-ap-quota-details"></div>
+          <div class="ag-ap-quota-details" id="ag-ap-quota-details" style="display:none;"></div>
         \`;
         inputBox.parentElement.insertBefore(panel, inputBox);
-
-        const toggleBtn = panel.querySelector('#ag-ap-toggle-btn');
-        if (toggleBtn) {
-          toggleBtn.addEventListener('click', (e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            window.__agPanelCollapsed = !window.__agPanelCollapsed;
-            panel.classList.toggle('ag-collapsed', window.__agPanelCollapsed);
-            toggleBtn.textContent = window.__agPanelCollapsed ? 'Show' : 'Hide';
-          });
-        }
-
-        panel.addEventListener('click', (e) => {
-          const detailBtn = e.target.closest('#ag-ap-q-detail-btn');
-          if (detailBtn) {
-            e.preventDefault();
-            e.stopPropagation();
-            window.__agQuotaDetailsOpen = !window.__agQuotaDetailsOpen;
-            if (window.__agLastData) renderPanel(window.__agLastData);
-            return;
-          }
-          const btn = e.target.closest('#ag-ap-done-toggle-btn');
-          if (btn) {
-            e.preventDefault();
-            e.stopPropagation();
-            window.__agDoneOpen = !window.__agDoneOpen;
-            if (window.__agLastData) renderPanel(window.__agLastData);
-          }
-        });
       } else if (panel.nextElementSibling !== inputBox) {
         inputBox.parentElement.insertBefore(panel, inputBox);
       }
+
+      let qBar = panel.querySelector('#ag-ap-quota-bar');
+      if (!qBar) {
+        qBar = document.createElement('div');
+        qBar.id = 'ag-ap-quota-bar';
+        qBar.className = 'ag-ap-quota-bar';
+        panel.appendChild(qBar);
+      }
+
+      let qDetails = panel.querySelector('#ag-ap-quota-details');
+      if (!qDetails) {
+        qDetails = document.createElement('div');
+        qDetails.id = 'ag-ap-quota-details';
+        qDetails.className = 'ag-ap-quota-details';
+        qDetails.style.display = 'none';
+        panel.appendChild(qDetails);
+      }
+
+      // Always bind click handler on panel
+      panel.onclick = (e) => {
+        const toggleBtn = e.target.closest('#ag-ap-toggle-btn');
+        if (toggleBtn) {
+          e.preventDefault();
+          e.stopPropagation();
+          window.__agPanelCollapsed = !window.__agPanelCollapsed;
+          panel.classList.toggle('ag-collapsed', window.__agPanelCollapsed);
+          toggleBtn.textContent = window.__agPanelCollapsed ? 'Show' : 'Hide';
+          return;
+        }
+
+        const detailBtn = e.target.closest('#ag-ap-q-detail-btn');
+        if (detailBtn) {
+          e.preventDefault();
+          e.stopPropagation();
+          window.__agQuotaDetailsOpen = !window.__agQuotaDetailsOpen;
+          if (window.__agLastData) renderPanel(window.__agLastData);
+          return;
+        }
+
+        const doneBtn = e.target.closest('#ag-ap-done-toggle-btn');
+        if (doneBtn) {
+          e.preventDefault();
+          e.stopPropagation();
+          window.__agDoneOpen = !window.__agDoneOpen;
+          if (window.__agLastData) renderPanel(window.__agLastData);
+          return;
+        }
+      };
 
       const anyMenuOpen =
         !!inputBox.querySelector('[aria-expanded="true"], [data-state="open"]') ||
