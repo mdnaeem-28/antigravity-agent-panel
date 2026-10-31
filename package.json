@@ -1,7 +1,7 @@
 {
   "name": "antigravity-agent-panel",
-  "version": "1.0.0",
-  "description": "Native real-time Agent & Subagent Token Telemetry Panel for Google Antigravity 2.0, pinned directly above the chat input box with zero token overhead.",
+  "version": "1.1.0",
+  "description": "Native real-time Agent & Subagent Token Telemetry Panel with Model Quota Tracking for Google Antigravity 2.0, pinned directly above the chat input box with zero token overhead.",
   "main": "daemon.js",
   "bin": {
     "antigravity-agent-panel": "./install.js"

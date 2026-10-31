@@ -1447,6 +1447,12 @@ const server = http.createServer((req, res) => {
   }
 
   const urlObj = new URL(req.url, `http://127.0.0.1:${PORT}`);
+  if (urlObj.pathname === '/api/stop') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ status: 'stopping' }));
+    setTimeout(() => process.exit(0), 100);
+    return;
+  }
   if (urlObj.pathname === '/api/live') {
     const cid = urlObj.searchParams.get('cid') || null;
     const model = urlObj.searchParams.get('model') || '';

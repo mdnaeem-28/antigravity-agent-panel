@@ -3,10 +3,12 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const http = require('http');
+const { execSync } = require('child_process');
 
 const home = os.homedir();
+const PORT = 4747;
 
-console.log('Uninstalling Antigravity Native Agent Panel...');
+console.log('🛑 Uninstalling Antigravity Native Agent Panel...');
 
 // 1. Remove OS-specific startup entries
 if (process.platform === 'win32') {
@@ -85,4 +87,31 @@ if (fs.existsSync(portFile)) {
   } catch {}
 }
 
-console.log('✔ Uninstall complete. Stop the background node daemon if still running on port 4747.');
+// 3. Stop background daemon
+const stopReq = http.request(
+  {
+    hostname: '127.0.0.1',
+    port: PORT,
+    path: '/api/stop',
+    method: 'POST',
+    timeout: 1000,
+  },
+  () => {
+    console.log('✔ Background daemon stopped.');
+  }
+);
+stopReq.on('error', () => {
+  try {
+    if (process.platform === 'win32') {
+      execSync(
+        `powershell -NoProfile -Command "Get-NetTCPConnection -LocalPort ${PORT} -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }"`,
+        { stdio: 'ignore' }
+      );
+    } else {
+      execSync(`lsof -ti:${PORT} | xargs kill -9 2>/dev/null || true`, { stdio: 'ignore', shell: true });
+    }
+  } catch {}
+});
+stopReq.end();
+
+console.log('✔ Uninstall complete.');
